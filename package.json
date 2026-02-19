@@ -4,8 +4,8 @@
   "type": "module",
   "license": "MIT",
   "scripts": {
-    "dev": "vite --host",
-    "dev:electron": "concurrently \"npm run dev\" \"wait-on http://localhost:3000 && electron .\"",
+    "dev": "vite --host 127.0.0.1 --port 3000",
+    "dev:electron": "concurrently \"pnpm dev\" \"wait-on http://127.0.0.1:3000 && electron .\"",
     "electron:dev": "concurrently \"pnpm dev\" \"wait-on http://127.0.0.1:3000 && electron .\"",
     "electron:build": "pnpm build && electron-builder",
     "build": "vite build && esbuild server/index.ts --platform=node --packages=external --bundle --format=esm --outdir=dist",
