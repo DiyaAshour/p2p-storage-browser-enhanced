@@ -2,25 +2,64 @@ import { app, BrowserWindow, Menu, ipcMain, shell } from 'electron';
 import path from 'path';
 import { fileURLToPath } from 'url';
 import isDev from 'electron-is-dev';
+import { spawn } from 'child_process';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 
 let mainWindow;
+let serverProcess;
+let viteProcess;
+
+function startBackend() {
+  const serverPath = isDev 
+    ? path.join(__dirname, '../server/index.ts')
+    : path.join(__dirname, '../dist/index.js');
+  
+  const cmd = isDev ? 'pnpm' : 'node';
+  const args = isDev ? ['tsx', serverPath] : [serverPath];
+
+  serverProcess = spawn(cmd, args, {
+    shell: true,
+    env: { ...process.env, NODE_ENV: isDev ? 'development' : 'production' }
+  });
+
+  serverProcess.stdout.on('data', (data) => console.log(`Server: ${data}`));
+  serverProcess.stderr.on('data', (data) => console.error(`Server Error: ${data}`));
+}
+
+function startFrontend() {
+  if (!isDev) {
+    // في نسخة الإنتاج، نستخدم vite لخدمة الملفات أو نعتمد على السيرفر المدمج
+    // هنا سنقوم بتشغيل vite preview أو ما يعادلها لضمان عمل الرابط 3000
+    viteProcess = spawn('pnpm', ['vite', 'preview', '--port', '3000', '--host', '127.0.0.1'], {
+      shell: true
+    });
+  } else {
+    viteProcess = spawn('pnpm', ['dev'], {
+      shell: true
+    });
+  }
+}
 
 async function createWindow() {
-  const url = isDev ? 'http://127.0.0.1:3000' : 'http://127.0.0.1:3000'; // سنفترض أن السيرفر يعمل محلياً
+  // تشغيل السيرفرات في الخلفية
+  startBackend();
+  startFrontend();
 
-  // فتح المتصفح الافتراضي
-  await shell.openExternal(url);
+  const url = 'http://127.0.0.1:3000';
 
-  // إظهار نافذة صغيرة تخبر المستخدم أن التطبيق يعمل في المتصفح
+  // الانتظار قليلاً لضمان تشغيل السيرفر قبل فتح المتصفح
+  setTimeout(async () => {
+    await shell.openExternal(url);
+  }, 3000);
+
   mainWindow = new BrowserWindow({
-    width: 400,
-    height: 200,
+    width: 450,
+    height: 250,
     resizable: false,
     alwaysOnTop: true,
-    frame: false, // بدون إطار لتبدو كرسالة تنبيه
+    frame: false,
     webPreferences: {
       nodeIntegration: false,
       contextIsolation: true,
@@ -28,25 +67,39 @@ async function createWindow() {
   });
 
   mainWindow.loadURL(`data:text/html;charset=utf-8,
-    <body style="background: #1e293b; color: white; font-family: sans-serif; display: flex; flex-direction: column; align-items: center; justify-content: center; height: 100vh; margin: 0; border: 1px solid #334155;">
-      <h3 style="margin-bottom: 10px;">P2P Storage Browser</h3>
-      <p style="font-size: 14px; color: #94a3b8; text-align: center; padding: 0 20px;">Opening in your default browser for MetaMask support...</p>
-      <button onclick="window.close()" style="margin-top: 15px; padding: 5px 15px; background: #2563eb; border: none; color: white; border-radius: 4px; cursor: pointer;">Close this window</button>
+    <body style="background: #0f172a; color: white; font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif; display: flex; flex-direction: column; align-items: center; justify-content: center; height: 100vh; margin: 0; border: 2px solid #1e293b; border-radius: 8px;">
+      <div style="text-align: center; padding: 20px;">
+        <div style="font-size: 40px; margin-bottom: 10px;">🔐</div>
+        <h2 style="margin: 0 0 10px 0; color: #38bdf8;">P2P Storage Active</h2>
+        <p style="font-size: 14px; color: #94a3b8; line-height: 1.5;">
+          The decentralized network is running in the background.<br>
+          Opening your browser with <b>MetaMask</b> support...
+        </p>
+        <div style="margin-top: 20px; display: flex; gap: 10px; justify-content: center;">
+          <button onclick="window.close()" style="padding: 8px 20px; background: #0369a1; border: none; color: white; border-radius: 6px; cursor: pointer; font-weight: 600; transition: background 0.2s;">
+            Got it!
+          </button>
+        </div>
+      </div>
     </body>
   `);
-
-  // إغلاق النافذة تلقائياً بعد 5 ثوانٍ
-  setTimeout(() => {
-    if (mainWindow) mainWindow.close();
-  }, 5000);
 }
 
 app.on('ready', createWindow);
 
 app.on('window-all-closed', () => {
+  // إغلاق العمليات الخلفية عند إغلاق التطبيق
+  if (serverProcess) serverProcess.kill();
+  if (viteProcess) viteProcess.kill();
+  
   if (process.platform !== 'darwin') {
     app.quit();
   }
+});
+
+app.on('before-quit', () => {
+  if (serverProcess) serverProcess.kill();
+  if (viteProcess) viteProcess.kill();
 });
 
 app.on('activate', () => {
