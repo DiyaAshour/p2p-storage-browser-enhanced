@@ -73,13 +73,15 @@ async function createWindow() {
     height: 300,
     resizable: false,
     alwaysOnTop: true,
-    frame: false,
-    transparent: true,
+    frame: true, // أعدنا الإطار لضمان الظهور
+    center: true,
     webPreferences: {
       nodeIntegration: false,
       contextIsolation: true,
     },
   });
+
+  mainWindow.show();
 
   mainWindow.loadURL(`data:text/html;charset=utf-8,
     <body style="background: #0f172a; color: white; font-family: 'Segoe UI', sans-serif; display: flex; flex-direction: column; align-items: center; justify-content: center; height: 100vh; margin: 0; border: 2px solid #38bdf8; border-radius: 12px; overflow: hidden;">
