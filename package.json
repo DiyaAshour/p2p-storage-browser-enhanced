@@ -6,6 +6,8 @@
   "scripts": {
     "dev": "vite --host",
     "dev:electron": "concurrently \"npm run dev\" \"wait-on http://localhost:3000 && electron .\"",
+    "electron:dev": "concurrently \"pnpm dev\" \"wait-on http://127.0.0.1:3000 && electron .\"",
+    "electron:build": "pnpm build && electron-builder",
     "build": "vite build && esbuild server/index.ts --platform=node --packages=external --bundle --format=esm --outdir=dist",
     "build:electron": "vite build && electron-builder",
     "start": "NODE_ENV=production node dist/index.js",
