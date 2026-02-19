@@ -1,4 +1,4 @@
-import { app, BrowserWindow, Menu, ipcMain } from 'electron';
+import { app, BrowserWindow, Menu, ipcMain, shell } from 'electron';
 import path from 'path';
 import { fileURLToPath } from 'url';
 import isDev from 'electron-is-dev';
@@ -8,38 +8,37 @@ const __dirname = path.dirname(__filename);
 
 let mainWindow;
 
-function createWindow() {
+async function createWindow() {
+  const url = isDev ? 'http://127.0.0.1:3000' : 'http://127.0.0.1:3000'; // سنفترض أن السيرفر يعمل محلياً
+
+  // فتح المتصفح الافتراضي
+  await shell.openExternal(url);
+
+  // إظهار نافذة صغيرة تخبر المستخدم أن التطبيق يعمل في المتصفح
   mainWindow = new BrowserWindow({
-    width: 1400,
-    height: 900,
-    minWidth: 800,
-    minHeight: 600,
+    width: 400,
+    height: 200,
+    resizable: false,
+    alwaysOnTop: true,
+    frame: false, // بدون إطار لتبدو كرسالة تنبيه
     webPreferences: {
-      preload: path.join(__dirname, 'preload.js'),
       nodeIntegration: false,
       contextIsolation: true,
-      enableRemoteModule: false,
-      sandbox: true,
     },
-    icon: path.join(__dirname, '../assets/icon.png'),
   });
 
-  if (isDev) {
-    mainWindow.loadURL('http://127.0.0.1:3000');
-    mainWindow.webContents.openDevTools();
-  } else {
-    const indexPath = path.join(__dirname, '../dist/public/index.html');
-    console.log('Loading index from:', indexPath);
-    mainWindow.loadFile(indexPath).catch(err => {
-      console.error('Failed to load index.html:', err);
-    });
-    // تفعيل DevTools مؤقتاً في نسخة الإنتاج لمعرفة سبب الشاشة البيضاء
-    mainWindow.webContents.openDevTools();
-  }
+  mainWindow.loadURL(`data:text/html;charset=utf-8,
+    <body style="background: #1e293b; color: white; font-family: sans-serif; display: flex; flex-direction: column; align-items: center; justify-content: center; height: 100vh; margin: 0; border: 1px solid #334155;">
+      <h3 style="margin-bottom: 10px;">P2P Storage Browser</h3>
+      <p style="font-size: 14px; color: #94a3b8; text-align: center; padding: 0 20px;">Opening in your default browser for MetaMask support...</p>
+      <button onclick="window.close()" style="margin-top: 15px; padding: 5px 15px; background: #2563eb; border: none; color: white; border-radius: 4px; cursor: pointer;">Close this window</button>
+    </body>
+  `);
 
-  mainWindow.on('closed', () => {
-    mainWindow = null;
-  });
+  // إغلاق النافذة تلقائياً بعد 5 ثوانٍ
+  setTimeout(() => {
+    if (mainWindow) mainWindow.close();
+  }, 5000);
 }
 
 app.on('ready', createWindow);
