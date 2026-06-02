@@ -196,6 +196,14 @@ async function removeManifestSync(item) {
   }
 }
 
+function replaceTombstone(tombstoneUpdate = {}) {
+  if (!tombstoneUpdate?.id) return tombstoneUpdate;
+  const current = manifests();
+  const next = current.map((candidate) => candidate?.id === tombstoneUpdate.id ? tombstoneUpdate : candidate);
+  saveManifests(next);
+  return tombstoneUpdate;
+}
+
 // ─── Main: Local-first hard delete + Tombstone propagation ──────────────────
 //
 // Flow:
@@ -247,7 +255,7 @@ async function hardDeleteItem(payload = {}) {
   const removedIds  = new Set(manifestIds(item));
 
   // ── Build tombstone ────────────────────────────────────────────────────────
-  const tombstone = {
+  let tombstone = {
     type:                'delete-tombstone-v1',
     id:                  `tombstone:${item.hash || item.rootHash || crypto.randomUUID()}`,
     hash:                item.hash     || '',
@@ -259,6 +267,20 @@ async function hardDeleteItem(payload = {}) {
     reason:              'owner-hard-delete',
     chunkHashes:         hashes,
     originalManifestIds: Array.from(removedIds),
+    safetyCleanup: {
+      status: 'pending',
+      replicaId: 'aws-safety-peer',
+      deleted: [],
+      alreadyMissing: [],
+      errors: [],
+      updatedAt: null,
+    },
+    peerCleanup: {
+      status: 'pending',
+      sent: [],
+      errors: [],
+      updatedAt: null,
+    },
   };
 
   // ── Step 1: Remove file manifest → UI updates instantly ───────────────────
@@ -295,6 +317,7 @@ async function hardDeleteItem(payload = {}) {
   setTimeout(async () => {
     const report = {
       safetyDeleted:  [],
+      safetyAlreadyMissing: [],
       safetyErrors:   [],
       peerDeleteSent: [],
       peerErrors:     [],
@@ -305,10 +328,34 @@ async function hardDeleteItem(payload = {}) {
     for (const hash of hashes) {
       // 4a. AWS safety peer
       try {
+        console.log('[hard-delete] AWS safety delete start', {
+          name: item.name,
+          fileHash: item.hash,
+          chunkHash: hash,
+          tombstone: tombstone.id,
+        });
         const result = await deleteChunkFromSafetyPeer(hash, n?.peerId || 'desktop-client');
-        if (result?.ok) report.safetyDeleted.push(hash);
+        if (result?.ok) {
+          if (result.alreadyMissing) report.safetyAlreadyMissing.push(hash);
+          else report.safetyDeleted.push(hash);
+          console.log('[hard-delete] AWS safety delete confirmed', {
+            name: item.name,
+            fileHash: item.hash,
+            chunkHash: hash,
+            tombstone: tombstone.id,
+            alreadyMissing: Boolean(result.alreadyMissing),
+          });
+        }
       } catch (error) {
-        report.safetyErrors.push({ hash, error: error?.message || String(error) });
+        const entry = { hash, error: error?.message || String(error) };
+        report.safetyErrors.push(entry);
+        console.warn('[hard-delete] AWS safety delete failed', {
+          name: item.name,
+          fileHash: item.hash,
+          chunkHash: hash,
+          tombstone: tombstone.id,
+          error: entry.error,
+        });
       }
 
       // 4b. Connected peers
@@ -328,6 +375,26 @@ async function hardDeleteItem(payload = {}) {
       report.syncDelete = { ok: false, error: error?.message || String(error) };
     }
 
+    tombstone = replaceTombstone({
+      ...tombstone,
+      cleanupCompletedAt: new Date().toISOString(),
+      safetyCleanup: {
+        status: report.safetyErrors.length ? 'completed-with-errors' : 'completed',
+        replicaId: 'aws-safety-peer',
+        deleted: report.safetyDeleted,
+        alreadyMissing: report.safetyAlreadyMissing,
+        errors: report.safetyErrors,
+        updatedAt: new Date().toISOString(),
+      },
+      peerCleanup: {
+        status: report.peerErrors.length ? 'completed-with-errors' : 'completed',
+        sent: report.peerDeleteSent,
+        errors: report.peerErrors,
+        updatedAt: new Date().toISOString(),
+      },
+      remoteManifestCleanup: report.syncDelete,
+    });
+
     // 4d. Push tombstone online so offline devices receive delete command later
     try {
       report.tombstoneSync = await pushWalletManifest(tombstone);
@@ -341,6 +408,7 @@ async function hardDeleteItem(payload = {}) {
       hash:           item.hash,
       chunks:         hashes.length,
       safetyDeleted:  report.safetyDeleted.length,
+      safetyAlreadyMissing: report.safetyAlreadyMissing.length,
       safetyErrors:   report.safetyErrors.length,
       peerDeleteSent: report.peerDeleteSent.length,
       syncDelete:     report.syncDelete,
