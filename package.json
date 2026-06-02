@@ -30,7 +30,7 @@
     "dev:fast": "vite --host 127.0.0.1 --port 3000",
     "dev:renderer": "vite --host 127.0.0.1 --port 3000",
     "electron:dev": "node scripts/electron-dev-cloud.cjs",
-    "electron:dev:raw": "pnpm run ensure:cloud-defaults && concurrently \"pnpm dev:renderer\" \"pnpm paypal:server\" \"node scripts/launch-electron.cjs\"",
+    "electron:dev:raw": "pnpm run ensure:cloud-defaults && concurrently \"pnpm dev:renderer\" \"node scripts/launch-electron.cjs\"",
     "electron:dev:fast": "pnpm run electron:dev",
     "dev:electron": "pnpm run electron:dev",
     "dev:electron:fast": "pnpm run electron:dev:fast",
