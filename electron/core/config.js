@@ -36,26 +36,25 @@ export function quotaBytes(planId = 'free') {
 
 // ─── Chunking ─────────────────────────────────────────────────────────────────
 
+// Current production policy: every file uses 2MB chunks.
+// This keeps repair cheap, avoids huge WebSocket/AWS messages, and makes
+// tombstones/delete cleanup predictable. Do not switch 5GB+ files to a tiny
+// number of huge chunks; a 5GB file split into 3 chunks would require ~1.7GB
+// chunks, which is unsafe for repair, memory, and transport limits.
 export const DEFAULT_CHUNK_SIZE_BYTES = envNumber('P2P_CHUNK_SIZE_BYTES', 2 * 1024 * 1024);
 export const CHUNK_SIZE_BYTES = DEFAULT_CHUNK_SIZE_BYTES;
 
-export const ADAPTIVE_CHUNKING_ENABLED = String(process.env.P2P_ADAPTIVE_CHUNKING ?? 'true').toLowerCase() !== 'false';
-export const CHUNK_SIZE_SMALL_BYTES = envNumber('P2P_CHUNK_SIZE_SMALL_BYTES', 2 * 1024 * 1024);
-export const CHUNK_SIZE_MEDIUM_BYTES = envNumber('P2P_CHUNK_SIZE_MEDIUM_BYTES', 8 * 1024 * 1024);
-export const CHUNK_SIZE_LARGE_BYTES = envNumber('P2P_CHUNK_SIZE_LARGE_BYTES', 16 * 1024 * 1024);
-export const CHUNK_SIZE_HUGE_BYTES = envNumber('P2P_CHUNK_SIZE_HUGE_BYTES', 16 * 1024 * 1024);
-export const CHUNK_SIZE_MEDIUM_THRESHOLD_BYTES = envNumber('P2P_CHUNK_SIZE_MEDIUM_THRESHOLD_BYTES', 100 * 1024 * 1024);
-export const CHUNK_SIZE_LARGE_THRESHOLD_BYTES = envNumber('P2P_CHUNK_SIZE_LARGE_THRESHOLD_BYTES', 5 * 1024 ** 3);
-export const CHUNK_SIZE_HUGE_THRESHOLD_BYTES = envNumber('P2P_CHUNK_SIZE_HUGE_THRESHOLD_BYTES', 50 * 1024 ** 3);
+export const ADAPTIVE_CHUNKING_ENABLED = false;
+export const CHUNK_SIZE_SMALL_BYTES = DEFAULT_CHUNK_SIZE_BYTES;
+export const CHUNK_SIZE_MEDIUM_BYTES = DEFAULT_CHUNK_SIZE_BYTES;
+export const CHUNK_SIZE_LARGE_BYTES = DEFAULT_CHUNK_SIZE_BYTES;
+export const CHUNK_SIZE_HUGE_BYTES = DEFAULT_CHUNK_SIZE_BYTES;
+export const CHUNK_SIZE_MEDIUM_THRESHOLD_BYTES = Number.POSITIVE_INFINITY;
+export const CHUNK_SIZE_LARGE_THRESHOLD_BYTES = Number.POSITIVE_INFINITY;
+export const CHUNK_SIZE_HUGE_THRESHOLD_BYTES = Number.POSITIVE_INFINITY;
 
-export function chunkSizeForFile(fileSizeBytes = 0) {
-  if (!ADAPTIVE_CHUNKING_ENABLED) return DEFAULT_CHUNK_SIZE_BYTES;
-  const size = Number(fileSizeBytes);
-  if (!Number.isFinite(size) || size <= 0) return DEFAULT_CHUNK_SIZE_BYTES;
-  if (size >= CHUNK_SIZE_HUGE_THRESHOLD_BYTES) return CHUNK_SIZE_HUGE_BYTES;
-  if (size >= CHUNK_SIZE_LARGE_THRESHOLD_BYTES) return CHUNK_SIZE_LARGE_BYTES;
-  if (size >= CHUNK_SIZE_MEDIUM_THRESHOLD_BYTES) return CHUNK_SIZE_MEDIUM_BYTES;
-  return CHUNK_SIZE_SMALL_BYTES;
+export function chunkSizeForFile(_fileSizeBytes = 0) {
+  return DEFAULT_CHUNK_SIZE_BYTES;
 }
 
 // ─── Replication ──────────────────────────────────────────────────────────────
