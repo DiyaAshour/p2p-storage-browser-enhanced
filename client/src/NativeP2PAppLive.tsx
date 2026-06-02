@@ -77,7 +77,8 @@ type Channel =
   | "audit:list"
   | "audit:record"
   | "audit:clear"
-  | "audit:listManifests";
+  | "audit:listManifests"
+  | "wallet:setPlan";
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 type Bridge = { invoke: <T>(channel: Channel, payload?: unknown) => Promise<T> };
@@ -470,6 +471,78 @@ const [joinInviteToken, setJoinInviteToken] = useState("");
   const [activeWorkspaceId, setActiveWorkspaceId] = useState<string>(
     () => readJson(ACTIVE_WORKSPACE_KEY, "")
   );
+
+  const PAYPAL_CHECKOUT_URL = "http://127.0.0.1:8791";
+  const [payingPlanId, setPayingPlanId] = useState<string>("");
+
+  const buyPlan = (plan: Plan) =>
+    run(async () => {
+      if (!identityConnected) {
+        throw new Error("Connect wallet or sign in first");
+      }
+
+      const walletAddress = wallet?.accountId || wallet?.address;
+      if (!walletAddress) {
+        throw new Error("Missing wallet/account identity");
+      }
+
+      setPayingPlanId(plan.id);
+
+      try {
+        const createRes = await fetch(`${PAYPAL_CHECKOUT_URL}/paypal/create-order`, {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({
+            planId: plan.id,
+            wallet: walletAddress,
+          }),
+        });
+
+        const created = await createRes.json();
+
+        if (!createRes.ok || !created?.ok || !created?.approveUrl) {
+          throw new Error(created?.error || "Could not create PayPal checkout");
+        }
+
+        window.open(created.approveUrl, "_blank");
+
+        await showInfo(
+          "Complete PayPal payment",
+          "PayPal checkout opened in your browser.\n\nAfter completing the payment, click OK here to activate your plan."
+        );
+
+        const captureRes = await fetch(`${PAYPAL_CHECKOUT_URL}/paypal/capture-order`, {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({
+            orderId: created.orderId,
+            planId: plan.id,
+            wallet: walletAddress,
+          }),
+        });
+
+        const captured = await captureRes.json();
+
+        if (!captureRes.ok || !captured?.ok || !captured?.planUnlockToken) {
+          throw new Error(captured?.error || "Payment was not completed");
+        }
+
+        const nextWallet = await api!.invoke<WalletState>("wallet:setPlan", {
+          planId: captured.planId,
+          paidUntil: captured.paidUntil,
+          txHash: captured.orderId,
+          orderId: captured.orderId,
+          planUnlockToken: captured.planUnlockToken,
+        });
+
+        setWallet(nextWallet);
+        await refresh();
+
+        toast.success(`${captured.plan?.name || plan.name} plan activated`);
+      } finally {
+        setPayingPlanId("");
+      }
+    });
 
   // Bulk select state
   const [selectedItemIds, setSelectedItemIds] = useState<Set<string>>(new Set());
@@ -2631,6 +2704,32 @@ const failed = results.filter((result) => result.status === "rejected");
             <Zap className="size-3" />
             {bytes(wallet?.usedBytes)} used
           </span>
+
+          {wallet?.plans?.length ? (
+            <div className="mt-3 flex flex-wrap gap-2">
+              {wallet.plans
+                .filter((plan) => plan.priceUsd > 0)
+                .map((plan) => {
+                  const active = wallet.planId === plan.id || wallet.plan?.id === plan.id;
+
+                  return (
+                    <Button
+                      key={plan.id}
+                      size="sm"
+                      variant={active ? "default" : "outline"}
+                      disabled={busy || payingPlanId === plan.id}
+                      onClick={() => buyPlan(plan)}
+                      className="text-xs"
+                    >
+                      <Cloud className="size-3" />
+                      {active
+                        ? `${plan.name} Active`
+                        : `${plan.name} · $${plan.priceUsd}/mo`}
+                    </Button>
+                  );
+                })}
+            </div>
+          ) : null}
 
           {wallet?.plan?.quotaBytes && (
             <span className="flex items-center gap-1">
