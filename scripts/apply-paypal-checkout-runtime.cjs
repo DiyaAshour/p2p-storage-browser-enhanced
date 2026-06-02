@@ -65,15 +65,53 @@ function patchIpcContract() {
   return writeIfChanged(ipcContractPath, before, source);
 }
 
+function patchMainPlans(source) {
+  const productionPlans = `const FREE_QUOTA_BYTES = 10 * 1024 * 1024 * 1024;
+const TRIAL_DAYS = 7;
+const ENCRYPTION_ALGORITHM = 'aes-256-gcm';`;
+
+  source = source.replace(
+    /const FREE_QUOTA_BYTES = \d+ \* 1024 \* 1024 \* 1024;\s*const ENCRYPTION_ALGORITHM = 'aes-256-gcm';/,
+    productionPlans
+  );
+
+  const plansBlock = `const PLANS = {
+  free: { id: 'free', name: 'Trial', quotaBytes: FREE_QUOTA_BYTES, priceUsd: 0, locked: false, trialDays: TRIAL_DAYS, description: '10 GB trial for 7 days' },
+  trial: { id: 'trial', name: 'Trial', quotaBytes: FREE_QUOTA_BYTES, priceUsd: 0, locked: false, trialDays: TRIAL_DAYS, description: '10 GB trial for 7 days' },
+  starter: { id: 'starter', name: 'Starter', quotaBytes: 100 * 1024 ** 3, priceUsd: 2.99, locked: true, description: '100 GB storage plan' },
+  personal: { id: 'personal', name: 'Personal', quotaBytes: 1 * 1024 ** 4, priceUsd: 7.99, locked: true, description: '1 TB storage plan' },
+  plus: { id: 'plus', name: 'Plus', quotaBytes: 3 * 1024 ** 4, priceUsd: 14.99, locked: true, description: '3 TB storage plan' },
+  pro: { id: 'pro', name: 'Pro', quotaBytes: 7 * 1024 ** 4, priceUsd: 24.99, locked: true, description: '7 TB storage plan' },
+  ultra: { id: 'ultra', name: 'Ultra', quotaBytes: 10 * 1024 ** 4, priceUsd: 34.99, locked: true, description: '10 TB storage plan' },
+  tb1: { id: 'tb1', aliasFor: 'personal', name: 'Personal', quotaBytes: 1 * 1024 ** 4, priceUsd: 7.99, locked: true, hidden: true },
+  tb3: { id: 'tb3', aliasFor: 'plus', name: 'Plus', quotaBytes: 3 * 1024 ** 4, priceUsd: 14.99, locked: true, hidden: true },
+  tb7: { id: 'tb7', aliasFor: 'pro', name: 'Pro', quotaBytes: 7 * 1024 ** 4, priceUsd: 24.99, locked: true, hidden: true },
+  tb10: { id: 'tb10', aliasFor: 'ultra', name: 'Ultra', quotaBytes: 10 * 1024 ** 4, priceUsd: 34.99, locked: true, hidden: true },
+};`;
+
+  source = source.replace(/const PLANS = \{[\s\S]*?\n\};\n\nlet mainWindow = null;/, `${plansBlock}\n\nlet mainWindow = null;`);
+
+  source = source.replace(
+    /function walletSummary\(\) \{ const plan = PLANS\[walletState\.planId\] \|\| PLANS\.free; const usedBytes = walletState\.connected \? totalStoredBytesForWallet\(\) : 0; return \{ ok: true, \.\.\.walletState, encryptionSecret: null, loginSignature: null, encryptionKeySource: ENCRYPTION_KEY_SOURCE, minDrivePasswordLength: MIN_DRIVE_PASSWORD_LENGTH, address: activeWallet\(\) \|\| walletState\.address, plan, plans: Object\.values\(PLANS\), usedBytes, remainingBytes: Math\.max\(0, plan\.quotaBytes - usedBytes\), sync: lastSyncStatus \}; \}/,
+    "function visiblePlans() { return Object.values(PLANS).filter((plan) => !plan.hidden && !plan.aliasFor); }\nfunction canonicalPlanId(planId = 'free') { return PLANS[planId]?.aliasFor || planId; }\nfunction walletSummary() { const canonicalId = canonicalPlanId(walletState.planId); const plan = PLANS[canonicalId] || PLANS.free; const usedBytes = walletState.connected ? totalStoredBytesForWallet() : 0; return { ok: true, ...walletState, planId: canonicalId, encryptionSecret: null, loginSignature: null, encryptionKeySource: ENCRYPTION_KEY_SOURCE, minDrivePasswordLength: MIN_DRIVE_PASSWORD_LENGTH, address: activeWallet() || walletState.address, plan, plans: visiblePlans(), usedBytes, remainingBytes: Math.max(0, plan.quotaBytes - usedBytes), sync: lastSyncStatus }; }"
+  );
+
+  source = source.replace(
+    /ipcMain\.handle\('wallet:setPlan', async \(_event, payload = \{\}\) => \{ assertVerifiedWallet\(\); const planId = String\(payload\.planId \|\| 'free'\); if \(!PLANS\[planId\]\) throw new Error\('Unknown wallet plan'\); walletState = \{ \.\.\.walletState, planId, paidUntil: payload\.paidUntil \|\| walletState\.paidUntil \|\| null, subscriptionTx: payload\.txHash \|\| walletState\.subscriptionTx \|\| null \}; persistWallet\(\); return walletSummary\(\); \}\);/,
+    "ipcMain.handle('wallet:setPlan', async (_event, payload = {}) => { assertVerifiedWallet(); const requestedPlanId = String(payload.planId || 'free'); const planId = canonicalPlanId(requestedPlanId); if (!PLANS[planId]) throw new Error('Unknown wallet plan'); walletState = { ...walletState, planId, paidUntil: payload.paidUntil || walletState.paidUntil || null, subscriptionTx: payload.txHash || walletState.subscriptionTx || null }; persistWallet(); return walletSummary(); });"
+  );
+
+  return source;
+}
+
 function patchMain() {
   let source = read(mainPath);
   const before = source;
 
-  if (source.includes("ipcMain.handle('paypal:openCheckout'")) {
-    return false;
-  }
+  source = patchMainPlans(source);
 
-  const handler = `
+  if (!source.includes("ipcMain.handle('paypal:openCheckout'")) {
+    const handler = `
 function checkoutUrlMatches(currentUrl = '', targetUrl = '') {
   try {
     const current = new URL(String(currentUrl || ''));
@@ -184,11 +222,12 @@ ipcMain.handle('paypal:openCheckout', async (_event, payload = {}) => {
 });
 `;
 
-  if (!source.includes("ipcMain.handle('p2p:start'")) {
-    throw new Error('Could not find p2p:start IPC handler anchor in electron/main.js');
-  }
+    if (!source.includes("ipcMain.handle('p2p:start'")) {
+      throw new Error('Could not find p2p:start IPC handler anchor in electron/main.js');
+    }
 
-  source = source.replace("ipcMain.handle('p2p:start'", `${handler}\nipcMain.handle('p2p:start'`);
+    source = source.replace("ipcMain.handle('p2p:start'", `${handler}\nipcMain.handle('p2p:start'`);
+  }
 
   return writeIfChanged(mainPath, before, source);
 }
