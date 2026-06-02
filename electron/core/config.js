@@ -20,15 +20,15 @@ export const APP_TITLE = 'Chunknet';
 
 // ─── Storage plans ────────────────────────────────────────────────────────────
 
+export const FREE_QUOTA_BYTES = 5 * 1024 * 1024 * 1024;
+
 export const PLANS = {
-  free: { id: 'free', name: 'Free', quotaBytes: 5 * 1024 ** 3, priceUsd: 0, locked: false },
+  free: { id: 'free', name: 'Free', quotaBytes: FREE_QUOTA_BYTES, priceUsd: 0, locked: false },
   tb1: { id: 'tb1', name: '1 TB', quotaBytes: 1 * 1024 ** 4, priceUsd: 1, locked: true },
   tb3: { id: 'tb3', name: '3 TB', quotaBytes: 3 * 1024 ** 4, priceUsd: 2.5, locked: true },
   tb7: { id: 'tb7', name: '7 TB', quotaBytes: 7 * 1024 ** 4, priceUsd: 4.99, locked: true },
   tb10: { id: 'tb10', name: '10 TB', quotaBytes: 10 * 1024 ** 4, priceUsd: 7.99, locked: true },
 };
-
-export const FREE_QUOTA_BYTES = PLANS.free.quotaBytes;
 
 export function quotaBytes(planId = 'free') {
   return PLANS[planId]?.quotaBytes ?? FREE_QUOTA_BYTES;
