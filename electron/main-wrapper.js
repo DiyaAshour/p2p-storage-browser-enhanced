@@ -275,6 +275,8 @@ async function importMainWhenReady() {
   console.log('[main-wrapper] importing runtime after app ready');
   try {
     installLazySeedIpc();
+    await import('./protection-retry-early-ipc.js');
+    console.log('[main-wrapper] protection retry early IPC import finished');
     await import('./p2p-transport-global-registry.js');
     console.log('[main-wrapper] p2p global registry import finished');
     await import('./p2p-delete-message-override.js');
@@ -370,17 +372,21 @@ async function startChunknet() {
   await importMainWhenReady();
 }
 
-if (app.isReady()) {
-  startChunknet().catch((error) => {
-    console.error('[main-wrapper] startup failed:', error?.stack || error?.message || error);
-    createFallbackWindow(error?.message || 'Chunknet startup failed');
-  });
-} else {
-  app.whenReady().then(startChunknet).catch((error) => {
-    console.error('[main-wrapper] startup failed:', error?.stack || error?.message || error);
-    createFallbackWindow(error?.message || 'Chunknet startup failed');
-  });
-}
+startChunknet().catch((error) => {
+  console.error('[main-wrapper] startup failed:', error?.stack || error?.message || error);
+  app.whenReady().then(() => createFallbackWindow(error?.message || 'Startup failed'));
+});
 
-app.on('activate', showMainWindow);
 app.on('before-quit', () => { isQuitting = true; });
+
+app.whenReady().then(() => {
+  createTray();
+  setTimeout(() => createFallbackWindow('safety fallback after ready'), 5000);
+});
+
+app.on('window-all-closed', (event) => {
+  if (IS_DEV_WRAPPER || isQuitting || process.platform !== 'darwin') app.quit();
+  else event?.preventDefault?.();
+});
+
+app.on('activate', () => showMainWindow());
