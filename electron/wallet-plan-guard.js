@@ -4,9 +4,19 @@ import crypto from 'node:crypto';
 const INSTALLED = Symbol.for('chunknet.walletPlanGuardInstalled');
 const ORIGINAL_HANDLE = Symbol.for('chunknet.walletPlanGuardOriginalHandle');
 const PLAN_UNLOCK_VERSION = 'plan-unlock-hmac-sha256-v1';
+const DEFAULT_PAYPAL_CHECKOUT_URL = 'http://54.166.171.208:8791';
 
 function planUnlockSecret() {
   return String(process.env.P2P_PLAN_UNLOCK_SECRET || process.env.PLAN_UNLOCK_SECRET || '').trim();
+}
+
+function paypalCheckoutUrl() {
+  return String(
+    process.env.PAYPAL_CHECKOUT_URL ||
+      process.env.VITE_PAYPAL_CHECKOUT_URL ||
+      process.env.P2P_PAYPAL_CHECKOUT_URL ||
+      DEFAULT_PAYPAL_CHECKOUT_URL
+  ).replace(/\r/g, '').trim().replace(/\/+$/, '');
 }
 
 function normalizeWallet(address = '') {
@@ -34,12 +44,9 @@ function signPlanUnlock(payload, secret = planUnlockSecret()) {
   return crypto.createHmac('sha256', secret).update(planUnlockPayload(payload)).digest('hex');
 }
 
-function verifyPlanUnlock(payload = {}) {
+function basicValidatePaidPayload(payload = {}) {
   const planId = String(payload.planId || 'free').trim();
-  if (planId === 'free') return;
-
-  const secret = planUnlockSecret();
-  if (!secret) throw new Error('Paid plan unlock is disabled: P2P_PLAN_UNLOCK_SECRET is not configured');
+  if (planId === 'free') return null;
 
   const wallet = normalizeWallet(payload.wallet || payload.walletAddress || payload.address);
   if (!/^0x[a-f0-9]{40}$/.test(wallet)) throw new Error('Paid plan unlock requires the paid wallet address');
@@ -55,8 +62,43 @@ function verifyPlanUnlock(payload = {}) {
   const token = String(payload.planUnlockToken || payload.unlockToken || '').trim().toLowerCase();
   if (!/^[a-f0-9]{64}$/.test(token)) throw new Error('Paid plan unlock token is missing or invalid');
 
-  const expected = signPlanUnlock({ wallet, planId, paidUntil, orderId }, secret);
-  if (!timingSafeEqualText(token, expected)) throw new Error('Paid plan unlock token verification failed');
+  return { wallet, planId, paidUntil, orderId, token };
+}
+
+async function verifyPlanUnlockRemotely(payload = {}) {
+  const endpoint = `${paypalCheckoutUrl()}/paypal/verify-unlock`;
+  const response = await fetch(endpoint, {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify(payload),
+  });
+  const data = await response.json().catch(() => ({}));
+  if (!response.ok || !data?.ok) {
+    throw new Error(data?.error || `Remote paid plan verification failed: ${response.status}`);
+  }
+}
+
+async function verifyPlanUnlock(payload = {}) {
+  const validated = basicValidatePaidPayload(payload);
+  if (!validated) return;
+
+  const secret = planUnlockSecret();
+  if (secret) {
+    const expected = signPlanUnlock(
+      { wallet: validated.wallet, planId: validated.planId, paidUntil: validated.paidUntil, orderId: validated.orderId },
+      secret
+    );
+    if (!timingSafeEqualText(validated.token, expected)) throw new Error('Paid plan unlock token verification failed');
+    return;
+  }
+
+  await verifyPlanUnlockRemotely({
+    wallet: validated.wallet,
+    planId: validated.planId,
+    paidUntil: validated.paidUntil,
+    orderId: validated.orderId,
+    planUnlockToken: validated.token,
+  });
 }
 
 export function installWalletPlanGuard() {
@@ -71,12 +113,12 @@ export function installWalletPlanGuard() {
     if (channel !== 'wallet:setPlan') return globalThis[ORIGINAL_HANDLE](channel, listener);
 
     return globalThis[ORIGINAL_HANDLE](channel, async (event, payload = {}) => {
-      verifyPlanUnlock(payload);
+      await verifyPlanUnlock(payload);
       return listener(event, payload);
     });
   };
 
-  console.log('[wallet-plan-guard] installed: paid plans require signed unlock tokens');
+  console.log('[wallet-plan-guard] installed: paid plans require server-verified unlock tokens');
 }
 
 installWalletPlanGuard();
