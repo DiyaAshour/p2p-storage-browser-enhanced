@@ -53,17 +53,17 @@ if (!source.includes('const visiblePaidPlans = useMemo(')) {
 
   const planSize = (plan: Plan) => {
     const size = Number(plan.quotaBytes || 0);
-    if (size >= 1024 ** 4) return \`${Math.round(size / 1024 ** 4)} TB\`;
-    return \`${Math.round(size / 1024 ** 3)} GB\`;
+    if (size >= 1024 ** 4) return \`\${Math.round(size / 1024 ** 4)} TB\`;
+    return \`\${Math.round(size / 1024 ** 3)} GB\`;
   };`
   );
 }
 
 // Close modal after successful activation.
 source = source.replace(
-  `        toast.success(\`${captured.plan?.name || plan.name} plan activated\`);`,
+  `        toast.success(\`\${captured.plan?.name || plan.name} plan activated\`);`,
   `        setPlanPickerOpen(false);
-        toast.success(\`${captured.plan?.name || plan.name} plan activated\`);`
+        toast.success(\`\${captured.plan?.name || plan.name} plan activated\`);`
 );
 
 // Remove old always-visible plan buttons.
@@ -85,8 +85,8 @@ const oldButtons = `          {wallet?.plans?.length ? (
                     >
                       <Cloud className="size-3" />
                       {active
-                        ? \`${plan.name} Active\`
-                        : \`${plan.name} · $${plan.priceUsd}/mo\`}
+                        ? \`\${plan.name} Active\`
+                        : \`\${plan.name} · $\${plan.priceUsd}/mo\`}
                     </Button>
                   );
                 })}
@@ -153,7 +153,7 @@ const newPlanPicker = `          {wallet?.connected && (
                     return (
                       <Card
                         key={plan.id}
-                        className={\`rounded-2xl border-zinc-800 bg-zinc-900 ${active ? "ring-2 ring-blue-500" : ""}\`}
+                        className={\`rounded-2xl border-zinc-800 bg-zinc-900 \${active ? "ring-2 ring-blue-500" : ""}\`}
                       >
                         <CardContent className="space-y-3 p-4">
                           <div>
@@ -163,7 +163,7 @@ const newPlanPicker = `          {wallet?.connected && (
 
                           <div>
                             <p className="text-2xl font-bold">
-                              ${Number(plan.priceUsd || 0).toFixed(2)}
+                              $\${Number(plan.priceUsd || 0).toFixed(2)}
                               <span className="text-xs font-normal text-zinc-400"> / month</span>
                             </p>
                             <p className="mt-1 text-xs text-zinc-500">
