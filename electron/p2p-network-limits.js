@@ -1,3 +1,13 @@
+// P2P transport safety limits.
+//
+// Chunk policy:
+// - small/normal files: 2MB chunks
+// - 100MB+ files: 8MB chunks
+// - 5GB+ files: 16MB chunks
+//
+// Chunks are sent as JSON/base64 messages. A 16MB binary chunk becomes ~21.4MB
+// in base64 before JSON overhead, so the default max message must be higher than
+// the binary chunk size. Keep this limit aligned with electron/core/config.js.
 export const P2P_NETWORK_LIMITS = {
   maxTotalPeers: Number(process.env.P2P_MAX_TOTAL_PEERS || 48),
   maxOutboundPeers: Number(process.env.P2P_MAX_OUTBOUND_PEERS || 16),
@@ -6,14 +16,14 @@ export const P2P_NETWORK_LIMITS = {
   maxChunkGetFanout: Number(process.env.P2P_MAX_CHUNK_GET_FANOUT || 4),
   maxPendingChunkRequests: Number(process.env.P2P_MAX_PENDING_CHUNK_REQUESTS || 64),
   maxPendingChunkAcks: Number(process.env.P2P_MAX_PENDING_CHUNK_ACKS || 64),
-  maxBufferedBytesPerPeer: Number(process.env.P2P_MAX_BUFFERED_BYTES_PER_PEER || 2 * 1024 * 1024),
-  maxMessageBytes: Number(process.env.P2P_MAX_MESSAGE_BYTES || 4 * 1024 * 1024),
+  maxBufferedBytesPerPeer: Number(process.env.P2P_MAX_BUFFERED_BYTES_PER_PEER || 64 * 1024 * 1024),
+  maxMessageBytes: Number(process.env.P2P_MAX_MESSAGE_BYTES || 32 * 1024 * 1024),
   reconnectBaseMs: Number(process.env.P2P_RECONNECT_BASE_MS || 1000),
   reconnectMaxMs: Number(process.env.P2P_RECONNECT_MAX_MS || 60 * 1000),
-  peerUploadBytesPerSecond: Number(process.env.P2P_PEER_UPLOAD_BYTES_PER_SEC || 1 * 1024 * 1024),
-  peerUploadBurstBytes: Number(process.env.P2P_PEER_UPLOAD_BURST_BYTES || 2 * 1024 * 1024),
-  globalUploadBytesPerSecond: Number(process.env.P2P_GLOBAL_UPLOAD_BYTES_PER_SEC || 8 * 1024 * 1024),
-  globalUploadBurstBytes: Number(process.env.P2P_GLOBAL_UPLOAD_BURST_BYTES || 8 * 1024 * 1024),
+  peerUploadBytesPerSecond: Number(process.env.P2P_PEER_UPLOAD_BYTES_PER_SEC || 4 * 1024 * 1024),
+  peerUploadBurstBytes: Number(process.env.P2P_PEER_UPLOAD_BURST_BYTES || 32 * 1024 * 1024),
+  globalUploadBytesPerSecond: Number(process.env.P2P_GLOBAL_UPLOAD_BYTES_PER_SEC || 16 * 1024 * 1024),
+  globalUploadBurstBytes: Number(process.env.P2P_GLOBAL_UPLOAD_BURST_BYTES || 64 * 1024 * 1024),
 };
 
 export function peerBucket(health, socket = null) {
