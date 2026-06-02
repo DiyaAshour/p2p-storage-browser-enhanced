@@ -60,8 +60,8 @@ export function chunkSizeForFile(fileSizeBytes = 0) {
 
 // ─── Replication ──────────────────────────────────────────────────────────────
 
-// Million-user target: 3 P2P replicas. Safety peer is emergency protection only.
-export const TARGET_REPLICAS = Math.max(1, envNumber('P2P_TARGET_REPLICAS', 3));
+// Enterprise protection target: 4 P2P replicas. Safety peer remains emergency protection only.
+export const TARGET_REPLICAS = Math.max(4, envNumber('P2P_TARGET_REPLICAS', 4));
 
 // ─── Encryption ───────────────────────────────────────────────────────────────
 
