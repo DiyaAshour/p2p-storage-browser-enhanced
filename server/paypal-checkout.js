@@ -1,17 +1,38 @@
 import http from 'node:http';
 import crypto from 'node:crypto';
 
-const PORT = Number(process.env.PAYPAL_CHECKOUT_PORT || process.env.PAYPAL_PORT || 8791);
-const HOST = process.env.PAYPAL_CHECKOUT_HOST || '0.0.0.0';
-const PAYPAL_ENV = String(process.env.PAYPAL_ENV || 'sandbox').toLowerCase();
-const PAYPAL_CLIENT_ID = process.env.PAYPAL_CLIENT_ID || '';
-const PAYPAL_CLIENT_SECRET = process.env.PAYPAL_CLIENT_SECRET || '';
+function envText(name, fallback = '') {
+  return String(process.env[name] ?? fallback).replace(/\r/g, '').trim();
+}
+
+function envBool(name, fallback = false) {
+  const value = envText(name, fallback ? 'true' : 'false').toLowerCase();
+  return ['1', 'true', 'yes', 'on'].includes(value);
+}
+
+function safeUrl(value, fallback) {
+  const raw = envText('', value || fallback);
+  try {
+    const url = new URL(raw);
+    if (!['http:', 'https:'].includes(url.protocol)) throw new Error('Unsupported URL protocol');
+    return url.toString();
+  } catch {
+    return fallback;
+  }
+}
+
+const PORT = Number(envText('PAYPAL_CHECKOUT_PORT', process.env.PAYPAL_PORT || '8791'));
+const HOST = envText('PAYPAL_CHECKOUT_HOST', '0.0.0.0');
+const PAYPAL_ENV = envText('PAYPAL_ENV', 'sandbox').toLowerCase();
+const PAYPAL_CLIENT_ID = envText('PAYPAL_CLIENT_ID');
+const PAYPAL_CLIENT_SECRET = envText('PAYPAL_CLIENT_SECRET');
 const PAYPAL_API = PAYPAL_ENV === 'live' ? 'https://api-m.paypal.com' : 'https://api-m.sandbox.paypal.com';
-const RETURN_URL = process.env.PAYPAL_RETURN_URL || 'https://example.com/paypal/success';
-const CANCEL_URL = process.env.PAYPAL_CANCEL_URL || 'https://example.com/paypal/cancel';
+const RETURN_URL = safeUrl(process.env.PAYPAL_RETURN_URL, 'https://example.com/chunknet-payment-success');
+const CANCEL_URL = safeUrl(process.env.PAYPAL_CANCEL_URL, 'https://example.com/chunknet-payment-cancel');
+const ALLOW_LOCAL_FALLBACK = envBool('PAYPAL_ALLOW_LOCAL_FALLBACK', false);
 const MAX_BODY_BYTES = 1024 * 1024;
 const PLAN_UNLOCK_VERSION = 'plan-unlock-hmac-sha256-v1';
-const PLAN_UNLOCK_SECRET = String(process.env.P2P_PLAN_UNLOCK_SECRET || process.env.PLAN_UNLOCK_SECRET || '').trim();
+const PLAN_UNLOCK_SECRET = envText('P2P_PLAN_UNLOCK_SECRET', process.env.PLAN_UNLOCK_SECRET || '');
 
 const PLANS = {
   tb1: { id: 'tb1', name: '1 TB', quotaBytes: 1 * 1024 ** 4, priceUsd: 1.0 },
@@ -147,20 +168,24 @@ async function createRealPayPalOrder(plan, wallet) {
       intent: 'CAPTURE',
       purchase_units: [{
         reference_id: plan.id,
-        description: `p2p.cloud ${plan.name} storage plan for ${wallet}`,
+        description: `Chunknet ${plan.name} storage plan for ${wallet}`,
         custom_id: JSON.stringify({ wallet, planId: plan.id }),
         amount: { currency_code: 'USD', value: Number(plan.priceUsd).toFixed(2) },
       }],
       application_context: {
-        brand_name: 'p2p.cloud',
+        brand_name: 'Chunknet',
         user_action: 'PAY_NOW',
+        shipping_preference: 'NO_SHIPPING',
         return_url: RETURN_URL,
         cancel_url: CANCEL_URL,
       },
     }),
   });
   const data = await response.json().catch(() => ({}));
-  if (!response.ok) throw new Error(data?.message || data?.name || `PayPal create order failed: ${response.status}`);
+  if (!response.ok) {
+    console.error('[paypal-checkout] create order failed', JSON.stringify({ status: response.status, data }, null, 2));
+    throw new Error((data?.message || data?.name || `PayPal create order failed: ${response.status}`) + ' :: ' + JSON.stringify(data));
+  }
   return data;
 }
 
@@ -174,7 +199,10 @@ async function captureRealPayPalOrder(orderId) {
     },
   });
   const data = await response.json().catch(() => ({}));
-  if (!response.ok) throw new Error(data?.message || data?.name || `PayPal capture failed: ${response.status}`);
+  if (!response.ok) {
+    console.error('[paypal-checkout] capture failed', JSON.stringify({ status: response.status, data }, null, 2));
+    throw new Error((data?.message || data?.name || `PayPal capture failed: ${response.status}`) + ' :: ' + JSON.stringify(data));
+  }
   return data;
 }
 
@@ -191,7 +219,7 @@ async function handleCreateOrder(req, res) {
   let order;
   if (hasPayPalCredentials()) {
     order = await createRealPayPalOrder(plan, wallet);
-  } else {
+  } else if (ALLOW_LOCAL_FALLBACK) {
     const orderId = `local-paypal-${Date.now()}-${Math.random().toString(16).slice(2)}`;
     order = {
       id: orderId,
@@ -199,6 +227,8 @@ async function handleCreateOrder(req, res) {
       links: [{ rel: 'approve', href: `https://www.paypal.com/checkoutnow?token=${encodeURIComponent(orderId)}` }],
       localFallback: true,
     };
+  } else {
+    throw new Error('PayPal credentials are not configured');
   }
 
   const orderId = String(order.id || '');
@@ -274,6 +304,9 @@ function router(req, res) {
       api: PAYPAL_API,
       configured: hasPayPalCredentials(),
       planUnlockConfigured: Boolean(PLAN_UNLOCK_SECRET),
+      returnUrl: RETURN_URL,
+      cancelUrl: CANCEL_URL,
+      localFallback: ALLOW_LOCAL_FALLBACK,
       plans: Object.values(PLANS),
     });
   }
@@ -295,6 +328,7 @@ const server = http.createServer(async (req, res) => {
 
 server.listen(PORT, HOST, () => {
   console.log(`[paypal-checkout] listening on http://${HOST}:${PORT}`);
-  console.log(`[paypal-checkout] env=${PAYPAL_ENV} api=${PAYPAL_API} configured=${hasPayPalCredentials()} planUnlockConfigured=${Boolean(PLAN_UNLOCK_SECRET)}`);
+  console.log(`[paypal-checkout] env=${PAYPAL_ENV} api=${PAYPAL_API} configured=${hasPayPalCredentials()} planUnlockConfigured=${Boolean(PLAN_UNLOCK_SECRET)} localFallback=${ALLOW_LOCAL_FALLBACK}`);
+  console.log(`[paypal-checkout] return=${RETURN_URL} cancel=${CANCEL_URL}`);
   console.log(`[paypal-checkout] plans=${Object.keys(PLANS).join(', ')}`);
 });
