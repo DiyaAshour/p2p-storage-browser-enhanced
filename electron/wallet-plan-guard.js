@@ -63,7 +63,8 @@ function paidIdentityFromPayload(payload = {}) {
 
 function basicValidatePaidPayload(payload = {}) {
   const planId = String(payload.planId || 'free').trim();
-  if (planId === 'free' || planId === 'trial') return null;
+  if (planId === 'free') return;
+  if (planId === 'trial') return null;
 
   const wallet = paidIdentityFromPayload(payload);
   if (!isValidPaidIdentity(wallet)) throw new Error('Paid plan unlock requires the paid wallet or seed account identity');
