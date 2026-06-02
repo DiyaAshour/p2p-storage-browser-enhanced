@@ -8,7 +8,7 @@ const mainWrapperFile = path.join(root, 'electron', 'main-wrapper.js');
 if (!fs.existsSync(rendererFile)) throw new Error(`Missing ${rendererFile}`);
 if (!fs.existsSync(mainWrapperFile)) throw new Error(`Missing ${mainWrapperFile}`);
 
-let src = fs.readFileSync(rendererFile, 'utf8');
+let src = fs.readFileSync(rendererFile, 'utf8').replace(/\r\n/g, '\n');
 let changed = false;
 
 function mark(message) {
@@ -17,15 +17,32 @@ function mark(message) {
 }
 
 function ensurePayPalChannelTypes() {
-  if (!src.includes('"paypal:createSubscription"')) {
-    const needle = '  | "paypal:openCheckout"\n';
-    if (!src.includes(needle)) throw new Error('Could not find paypal:openCheckout in renderer Channel union.');
+  const hasCreate = src.includes('"paypal:createSubscription"');
+  const hasOpen = src.includes('"paypal:openCheckout"');
+  const hasConfirm = src.includes('"paypal:confirmSubscription"');
+
+  if (hasCreate && hasOpen && hasConfirm) return;
+
+  if (hasOpen) {
     src = src.replace(
-      needle,
+      /\s*\|\s*"paypal:openCheckout"\n/,
       '  | "paypal:createSubscription"\n  | "paypal:openCheckout"\n  | "paypal:confirmSubscription"\n'
     );
-    mark('added PayPal subscription channels to renderer Channel union');
+    mark('added PayPal subscription channels near paypal:openCheckout');
+    return;
   }
+
+  const walletSetPlan = '  | "wallet:setPlan"';
+  if (src.includes(walletSetPlan)) {
+    src = src.replace(
+      walletSetPlan,
+      '  | "paypal:createSubscription"\n  | "paypal:openCheckout"\n  | "paypal:confirmSubscription"\n' + walletSetPlan
+    );
+    mark('added PayPal subscription channels before wallet:setPlan fallback marker');
+    return;
+  }
+
+  throw new Error('Could not add PayPal IPC channel types to renderer Channel union.');
 }
 
 function removeRendererPayPalServerUrl() {
@@ -130,11 +147,11 @@ function replaceBuyPlan() {
 }
 
 function ensureMainWrapperImport() {
-  let main = fs.readFileSync(mainWrapperFile, 'utf8');
+  let main = fs.readFileSync(mainWrapperFile, 'utf8').replace(/\r\n/g, '\n');
   if (main.includes("./paypal-subscription-ipc.js")) return;
 
   const marker = "    await import('./wallet-plan-guard.js');\n    console.log('[main-wrapper] wallet plan guard import finished');\n";
-  const replacement = `${marker}    await import('./paypal-subscription-ipc.js');\n    console.log('[main-wrapper] paypal subscription IPC import finished');\n`;
+  const replacement = marker + "    await import('./paypal-subscription-ipc.js');\n    console.log('[main-wrapper] paypal subscription IPC import finished');\n";
   if (!main.includes(marker)) throw new Error('Could not find wallet-plan-guard import marker in main-wrapper.js');
 
   main = main.replace(marker, replacement);
