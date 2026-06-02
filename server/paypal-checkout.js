@@ -33,43 +33,25 @@ const ALLOW_LOCAL_FALLBACK = envBool('PAYPAL_ALLOW_LOCAL_FALLBACK', false);
 const MAX_BODY_BYTES = 1024 * 1024;
 const PLAN_UNLOCK_VERSION = 'plan-unlock-hmac-sha256-v1';
 const PLAN_UNLOCK_SECRET = envText('P2P_PLAN_UNLOCK_SECRET', process.env.PLAN_UNLOCK_SECRET || '');
+const GB = 1024 ** 3;
+const TB = 1024 ** 4;
 
 const PLANS = {
-  tb1: { id: 'tb1', name: '1 TB', quotaBytes: 1 * 1024 ** 4, priceUsd: 1.0 },
-  tb3: { id: 'tb3', name: '3 TB', quotaBytes: 3 * 1024 ** 4, priceUsd: 2.5 },
-  tb7: { id: 'tb7', name: '7 TB', quotaBytes: 7 * 1024 ** 4, priceUsd: 4.99 },
-  tb10: { id: 'tb10', name: '10 TB', quotaBytes: 10 * 1024 ** 4, priceUsd: 7.99 },
+  trial: { id: 'trial', name: 'Trial', quotaBytes: 10 * GB, priceUsd: 0, trialDays: 7, locked: false, description: '10 GB trial for 7 days' },
+  starter: { id: 'starter', name: 'Starter', quotaBytes: 100 * GB, priceUsd: 2.99, locked: true, description: '100 GB storage plan' },
+  personal: { id: 'personal', name: 'Personal', quotaBytes: 1 * TB, priceUsd: 7.99, locked: true, description: '1 TB storage plan' },
+  plus: { id: 'plus', name: 'Plus', quotaBytes: 3 * TB, priceUsd: 14.99, locked: true, description: '3 TB storage plan' },
+  pro: { id: 'pro', name: 'Pro', quotaBytes: 7 * TB, priceUsd: 24.99, locked: true, description: '7 TB storage plan' },
+  ultra: { id: 'ultra', name: 'Ultra', quotaBytes: 10 * TB, priceUsd: 34.99, locked: true, description: '10 TB storage plan' },
 };
 
 const PLAN_ALIASES = {
-  tb1: 'tb1',
-  '1tb': 'tb1',
-  '1_tb': 'tb1',
-  '1-tb': 'tb1',
-  plan1tb: 'tb1',
-  'plan-1tb': 'tb1',
-  '1': 'tb1',
-  tb3: 'tb3',
-  '3tb': 'tb3',
-  '3_tb': 'tb3',
-  '3-tb': 'tb3',
-  plan3tb: 'tb3',
-  'plan-3tb': 'tb3',
-  '3': 'tb3',
-  tb7: 'tb7',
-  '7tb': 'tb7',
-  '7_tb': 'tb7',
-  '7-tb': 'tb7',
-  plan7tb: 'tb7',
-  'plan-7tb': 'tb7',
-  '7': 'tb7',
-  tb10: 'tb10',
-  '10tb': 'tb10',
-  '10_tb': 'tb10',
-  '10-tb': 'tb10',
-  plan10tb: 'tb10',
-  'plan-10tb': 'tb10',
-  '10': 'tb10',
+  free: 'trial', trial: 'trial', demo: 'trial',
+  starter: 'starter', '100gb': 'starter', '100_gb': 'starter', '100-gb': 'starter',
+  personal: 'personal', tb1: 'personal', '1tb': 'personal', '1_tb': 'personal', '1-tb': 'personal', plan1tb: 'personal', 'plan-1tb': 'personal', '1': 'personal',
+  plus: 'plus', tb3: 'plus', '3tb': 'plus', '3_tb': 'plus', '3-tb': 'plus', plan3tb: 'plus', 'plan-3tb': 'plus', '3': 'plus',
+  pro: 'pro', tb7: 'pro', '7tb': 'pro', '7_tb': 'pro', '7-tb': 'pro', plan7tb: 'pro', 'plan-7tb': 'pro', '7': 'pro',
+  ultra: 'ultra', tb10: 'ultra', '10tb': 'ultra', '10_tb': 'ultra', '10-tb': 'ultra', plan10tb: 'ultra', 'plan-10tb': 'ultra', '10': 'ultra',
 };
 
 const pendingOrders = new Map();
@@ -87,13 +69,7 @@ function resolvePlan(value = '') {
 }
 
 function planUnlockPayload({ wallet, planId, paidUntil, orderId }) {
-  return JSON.stringify({
-    version: PLAN_UNLOCK_VERSION,
-    wallet: normalizeWallet(wallet),
-    planId: String(planId || '').trim(),
-    paidUntil: Number(paidUntil || 0),
-    orderId: String(orderId || '').trim(),
-  });
+  return JSON.stringify({ version: PLAN_UNLOCK_VERSION, wallet: normalizeWallet(wallet), planId: String(planId || '').trim(), paidUntil: Number(paidUntil || 0), orderId: String(orderId || '').trim() });
 }
 
 function signPlanUnlock(payload) {
@@ -109,38 +85,22 @@ function timingSafeEqualText(a = '', b = '') {
 
 function verifyPlanUnlockToken({ wallet, planId, paidUntil, orderId, planUnlockToken }) {
   const resolvedPlan = resolvePlan(planId);
+  if (Number(resolvedPlan.priceUsd || 0) <= 0) throw new Error('Only paid plans can be unlocked by payment token');
   const normalizedWallet = normalizeWallet(wallet);
   if (!/^0x[a-f0-9]{40}$/.test(normalizedWallet)) throw new Error('Valid wallet address required');
-
   const expiry = Number(paidUntil || 0);
-  if (!Number.isFinite(expiry) || expiry <= Math.floor(Date.now() / 1000)) {
-    throw new Error('Plan unlock is expired');
-  }
-
+  if (!Number.isFinite(expiry) || expiry <= Math.floor(Date.now() / 1000)) throw new Error('Plan unlock is expired');
   const normalizedOrderId = String(orderId || '').trim();
   if (!normalizedOrderId) throw new Error('PayPal order id required');
-
   const token = String(planUnlockToken || '').trim().toLowerCase();
   if (!/^[a-f0-9]{64}$/.test(token)) throw new Error('Plan unlock token is missing or invalid');
-
-  const expected = signPlanUnlock({
-    wallet: normalizedWallet,
-    planId: resolvedPlan.id,
-    paidUntil: expiry,
-    orderId: normalizedOrderId,
-  });
-
+  const expected = signPlanUnlock({ wallet: normalizedWallet, planId: resolvedPlan.id, paidUntil: expiry, orderId: normalizedOrderId });
   if (!timingSafeEqualText(token, expected)) throw new Error('Plan unlock token verification failed');
   return { wallet: normalizedWallet, planId: resolvedPlan.id, paidUntil: expiry, orderId: normalizedOrderId };
 }
 
 function send(res, status, payload) {
-  res.writeHead(status, {
-    'content-type': 'application/json; charset=utf-8',
-    'access-control-allow-origin': '*',
-    'access-control-allow-methods': 'GET,POST,OPTIONS',
-    'access-control-allow-headers': 'content-type',
-  });
+  res.writeHead(status, { 'content-type': 'application/json; charset=utf-8', 'access-control-allow-origin': '*', 'access-control-allow-methods': 'GET,POST,OPTIONS', 'access-control-allow-headers': 'content-type' });
   res.end(JSON.stringify(payload));
 }
 
@@ -157,10 +117,7 @@ function readBody(req) {
       }
       chunks.push(chunk);
     });
-    req.on('end', () => {
-      const raw = Buffer.concat(chunks).toString('utf8') || '{}';
-      try { resolve(JSON.parse(raw)); } catch { reject(new Error('Invalid JSON body')); }
-    });
+    req.on('end', () => { const raw = Buffer.concat(chunks).toString('utf8') || '{}'; try { resolve(JSON.parse(raw)); } catch { reject(new Error('Invalid JSON body')); } });
     req.on('error', reject);
   });
 }
@@ -176,14 +133,7 @@ function hasPayPalCredentials() {
 async function paypalToken() {
   if (!hasPayPalCredentials()) throw new Error('PayPal credentials are not configured');
   const basic = Buffer.from(`${PAYPAL_CLIENT_ID}:${PAYPAL_CLIENT_SECRET}`).toString('base64');
-  const response = await fetch(`${PAYPAL_API}/v1/oauth2/token`, {
-    method: 'POST',
-    headers: {
-      authorization: `Basic ${basic}`,
-      'content-type': 'application/x-www-form-urlencoded',
-    },
-    body: 'grant_type=client_credentials',
-  });
+  const response = await fetch(`${PAYPAL_API}/v1/oauth2/token`, { method: 'POST', headers: { authorization: `Basic ${basic}`, 'content-type': 'application/x-www-form-urlencoded' }, body: 'grant_type=client_credentials' });
   const data = await response.json().catch(() => ({}));
   if (!response.ok) throw new Error(data.error_description || data.error || `PayPal token failed: ${response.status}`);
   return data.access_token;
@@ -193,25 +143,11 @@ async function createRealPayPalOrder(plan, wallet) {
   const token = await paypalToken();
   const response = await fetch(`${PAYPAL_API}/v2/checkout/orders`, {
     method: 'POST',
-    headers: {
-      authorization: `Bearer ${token}`,
-      'content-type': 'application/json',
-    },
+    headers: { authorization: `Bearer ${token}`, 'content-type': 'application/json' },
     body: JSON.stringify({
       intent: 'CAPTURE',
-      purchase_units: [{
-        reference_id: plan.id,
-        description: `Chunknet ${plan.name} storage plan for ${wallet}`,
-        custom_id: JSON.stringify({ wallet, planId: plan.id }),
-        amount: { currency_code: 'USD', value: Number(plan.priceUsd).toFixed(2) },
-      }],
-      application_context: {
-        brand_name: 'Chunknet',
-        user_action: 'PAY_NOW',
-        shipping_preference: 'NO_SHIPPING',
-        return_url: RETURN_URL,
-        cancel_url: CANCEL_URL,
-      },
+      purchase_units: [{ reference_id: plan.id, description: `Chunknet ${plan.name} storage plan for ${wallet}`, custom_id: JSON.stringify({ wallet, planId: plan.id }), amount: { currency_code: 'USD', value: Number(plan.priceUsd).toFixed(2) } }],
+      application_context: { brand_name: 'Chunknet', user_action: 'PAY_NOW', shipping_preference: 'NO_SHIPPING', return_url: RETURN_URL, cancel_url: CANCEL_URL },
     }),
   });
   const data = await response.json().catch(() => ({}));
@@ -224,13 +160,7 @@ async function createRealPayPalOrder(plan, wallet) {
 
 async function captureRealPayPalOrder(orderId) {
   const token = await paypalToken();
-  const response = await fetch(`${PAYPAL_API}/v2/checkout/orders/${encodeURIComponent(orderId)}/capture`, {
-    method: 'POST',
-    headers: {
-      authorization: `Bearer ${token}`,
-      'content-type': 'application/json',
-    },
-  });
+  const response = await fetch(`${PAYPAL_API}/v2/checkout/orders/${encodeURIComponent(orderId)}/capture`, { method: 'POST', headers: { authorization: `Bearer ${token}`, 'content-type': 'application/json' } });
   const data = await response.json().catch(() => ({}));
   if (!response.ok) {
     console.error('[paypal-checkout] capture failed', JSON.stringify({ status: response.status, data }, null, 2));
@@ -246,121 +176,64 @@ function oneMonthFromNowSeconds() {
 async function handleCreateOrder(req, res) {
   const body = await readBody(req);
   const plan = resolvePlan(body.planId || body.plan || body.subscriptionPlan || body.selectedPlan);
+  if (Number(plan.priceUsd || 0) <= 0) throw new Error(`${plan.name} does not require PayPal checkout`);
   const wallet = normalizeWallet(body.wallet || body.walletAddress || body.address);
   if (!/^0x[a-f0-9]{40}$/.test(wallet)) throw new Error('Valid wallet address required');
-
   let order;
   if (hasPayPalCredentials()) {
     order = await createRealPayPalOrder(plan, wallet);
   } else if (ALLOW_LOCAL_FALLBACK) {
     const orderId = `local-paypal-${Date.now()}-${Math.random().toString(16).slice(2)}`;
-    order = {
-      id: orderId,
-      status: 'CREATED',
-      links: [{ rel: 'approve', href: `https://www.paypal.com/checkoutnow?token=${encodeURIComponent(orderId)}` }],
-      localFallback: true,
-    };
+    order = { id: orderId, status: 'CREATED', links: [{ rel: 'approve', href: `https://www.paypal.com/checkoutnow?token=${encodeURIComponent(orderId)}` }], localFallback: true };
   } else {
     throw new Error('PayPal credentials are not configured');
   }
-
   const orderId = String(order.id || '');
   const approveUrl = approvalLink(order);
   if (!orderId || !approveUrl) throw new Error('PayPal did not return an approval link');
-
   pendingOrders.set(orderId, { orderId, wallet, planId: plan.id, createdAt: new Date().toISOString(), priceUsd: plan.priceUsd });
-
-  return send(res, 200, {
-    ok: true,
-    orderId,
-    id: orderId,
-    approveUrl,
-    approvalUrl: approveUrl,
-    checkoutUrl: approveUrl,
-    planId: plan.id,
-    plan,
-    wallet,
-    paypal: order,
-  });
+  return send(res, 200, { ok: true, orderId, id: orderId, approveUrl, approvalUrl: approveUrl, checkoutUrl: approveUrl, planId: plan.id, plan, wallet, paypal: order });
 }
 
 async function handleCaptureOrder(req, res) {
   const body = await readBody(req);
   const orderId = String(body.orderId || body.id || body.token || '').trim();
   if (!orderId) throw new Error('PayPal order id required');
-
   const requestedPlan = body.planId || body.plan || body.subscriptionPlan;
   const wallet = normalizeWallet(body.wallet || body.walletAddress || body.address);
   const pending = pendingOrders.get(orderId);
-
   let capture = null;
   if (hasPayPalCredentials() && !orderId.startsWith('local-paypal-')) {
     capture = await captureRealPayPalOrder(orderId);
     const status = String(capture.status || '').toUpperCase();
     if (status && status !== 'COMPLETED') throw new Error(`PayPal payment not completed: ${status}`);
   }
-
   const plan = resolvePlan(requestedPlan || pending?.planId);
+  if (Number(plan.priceUsd || 0) <= 0) throw new Error(`${plan.name} does not require PayPal capture`);
   if (pending?.planId && pending.planId !== plan.id) throw new Error('Subscription plan does not match selected app plan');
   if (pending?.wallet && wallet && pending.wallet !== wallet) throw new Error('Wallet does not match pending PayPal order');
-
   const paidUntil = oneMonthFromNowSeconds();
   const unlockWallet = wallet || pending?.wallet;
   const planUnlockToken = signPlanUnlock({ wallet: unlockWallet, planId: plan.id, paidUntil, orderId });
-
   pendingOrders.delete(orderId);
-  return send(res, 200, {
-    ok: true,
-    captured: true,
-    orderId,
-    id: orderId,
-    planId: plan.id,
-    plan,
-    wallet: unlockWallet,
-    paidUntil,
-    planUnlockVersion: PLAN_UNLOCK_VERSION,
-    planUnlockToken,
-    capture,
-  });
+  return send(res, 200, { ok: true, captured: true, orderId, id: orderId, planId: plan.id, plan, wallet: unlockWallet, paidUntil, planUnlockVersion: PLAN_UNLOCK_VERSION, planUnlockToken, capture });
 }
 
 async function handleVerifyUnlock(req, res) {
   const body = await readBody(req);
-  const verified = verifyPlanUnlockToken({
-    wallet: body.wallet || body.walletAddress || body.address,
-    planId: body.planId || body.plan || body.subscriptionPlan,
-    paidUntil: body.paidUntil,
-    orderId: body.orderId || body.paypalOrderId || body.captureId || body.txHash,
-    planUnlockToken: body.planUnlockToken || body.unlockToken,
-  });
+  const verified = verifyPlanUnlockToken({ wallet: body.wallet || body.walletAddress || body.address, planId: body.planId || body.plan || body.subscriptionPlan, paidUntil: body.paidUntil, orderId: body.orderId || body.paypalOrderId || body.captureId || body.txHash, planUnlockToken: body.planUnlockToken || body.unlockToken });
   return send(res, 200, { ok: true, verified, planUnlockVersion: PLAN_UNLOCK_VERSION });
 }
 
 function router(req, res) {
   const url = new URL(req.url || '/', 'http://localhost');
   const route = url.pathname.replace(/\/+$/, '') || '/';
-
   if (req.method === 'OPTIONS') return send(res, 200, { ok: true });
-  if (req.method === 'GET' && (route === '/' || route === '/health')) {
-    return send(res, 200, {
-      ok: true,
-      service: 'p2p-cloud-paypal-checkout',
-      env: PAYPAL_ENV,
-      api: PAYPAL_API,
-      configured: hasPayPalCredentials(),
-      planUnlockConfigured: Boolean(PLAN_UNLOCK_SECRET),
-      returnUrl: RETURN_URL,
-      cancelUrl: CANCEL_URL,
-      localFallback: ALLOW_LOCAL_FALLBACK,
-      plans: Object.values(PLANS),
-    });
-  }
+  if (req.method === 'GET' && (route === '/' || route === '/health')) return send(res, 200, { ok: true, service: 'p2p-cloud-paypal-checkout', env: PAYPAL_ENV, api: PAYPAL_API, configured: hasPayPalCredentials(), planUnlockConfigured: Boolean(PLAN_UNLOCK_SECRET), returnUrl: RETURN_URL, cancelUrl: CANCEL_URL, localFallback: ALLOW_LOCAL_FALLBACK, plans: Object.values(PLANS) });
   if (req.method === 'GET' && route === '/plans') return send(res, 200, { ok: true, plans: Object.values(PLANS), aliases: PLAN_ALIASES });
-
   if (req.method === 'POST' && ['/paypal/create-order', '/create-order', '/paypal/create', '/create'].includes(route)) return handleCreateOrder(req, res);
   if (req.method === 'POST' && ['/paypal/capture-order', '/capture-order', '/paypal/confirm', '/confirm'].includes(route)) return handleCaptureOrder(req, res);
   if (req.method === 'POST' && ['/paypal/verify-unlock', '/verify-unlock', '/paypal/verify', '/verify'].includes(route)) return handleVerifyUnlock(req, res);
-
   return send(res, 404, { ok: false, error: 'Not found' });
 }
 
