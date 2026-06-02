@@ -338,7 +338,7 @@ async function handleCaptureOrder(req, res) {
   const plan = resolvePlan(requestedPlan || pending?.planId);
   if (Number(plan.priceUsd || 0) <= 0) throw new Error(`${plan.name} does not require PayPal capture`);
   if (pending?.planId && pending.planId !== plan.id) throw new Error('Subscription plan does not match selected app plan');
-  if (pending?.wallet && wallet && pending.wallet !== wallet) throw new Error('Wallet or seed account identity does not match pending PayPal order');
+  if (pending?.wallet && wallet && pending.wallet !== wallet) throw new Error('Wallet does not match pending PayPal order');
   const paidUntil = oneMonthFromNowSeconds();
   const unlockWallet = wallet || pending?.wallet;
   if (!isValidPaidIdentity(unlockWallet)) throw new Error('Valid paid wallet or seed account identity required');
@@ -367,7 +367,7 @@ async function handleConfirmSubscription(req, res) {
   const requestedPlan = resolvePlan(body.planId || body.plan || body.subscriptionPlan || record?.planId);
   const wallet = paidIdentityFromPayload(body) || record?.wallet;
   if (!isValidPaidIdentity(wallet)) throw new Error('Valid paid wallet or seed account identity required');
-  if (record?.wallet && record.wallet !== wallet) throw new Error('Wallet or seed account identity does not match pending PayPal subscription');
+  if (record?.wallet && record.wallet !== wallet) throw new Error('Wallet does not match pending PayPal order');
   const subscription = await showSubscription(subscriptionId);
   return send(res, 200, subscriptionUnlockPayload({ subscription, record: { ...(record || {}), subscriptionId }, plan: requestedPlan, wallet }));
 }
@@ -433,24 +433,17 @@ function router(req, res) {
   if (req.method === 'POST' && ['/paypal/capture-order', '/capture-order', '/paypal/confirm', '/confirm'].includes(route)) return handleCaptureOrder(req, res);
   if (req.method === 'POST' && ['/paypal/create-subscription', '/create-subscription', '/paypal/subscribe', '/subscribe'].includes(route)) return handleCreateSubscription(req, res);
   if (req.method === 'POST' && ['/paypal/confirm-subscription', '/confirm-subscription', '/paypal/subscription-confirm', '/subscription-confirm'].includes(route)) return handleConfirmSubscription(req, res);
-  if ((req.method === 'GET' || req.method === 'POST') && ['/paypal/subscription-status', '/subscription-status', '/paypal/refresh-subscription', '/refresh-subscription'].includes(route)) return handleSubscriptionStatus(req, res);
-  if (req.method === 'POST' && ['/paypal/verify-unlock', '/verify-unlock', '/paypal/verify', '/verify'].includes(route)) return handleVerifyUnlock(req, res);
-  if (req.method === 'POST' && ['/paypal/webhook', '/webhook', '/paypal/paypal-webhook'].includes(route)) return handleWebhook(req, res);
-  return send(res, 404, { ok: false, error: 'Not found' });
+  if (req.method === 'POST' && ['/paypal/subscription-status', '/subscription-status', '/paypal/status'].includes(route)) return handleSubscriptionStatus(req, res);
+  if (req.method === 'POST' && ['/paypal/verify-unlock', '/verify-unlock'].includes(route)) return handleVerifyUnlock(req, res);
+  if (req.method === 'POST' && ['/paypal/webhook', '/webhook'].includes(route)) return handleWebhook(req, res);
+  return send(res, 404, { ok: false, error: 'Not found', route });
 }
 
-const server = http.createServer(async (req, res) => {
-  try {
-    await router(req, res);
-  } catch (error) {
-    return send(res, 400, { ok: false, error: error?.message || 'PayPal checkout error' });
-  }
+const server = http.createServer((req, res) => {
+  Promise.resolve(router(req, res)).catch((error) => {
+    console.error('[paypal-checkout] error:', error?.stack || error?.message || error);
+    send(res, 400, { ok: false, error: error?.message || 'PayPal checkout error' });
+  });
 });
 
-server.listen(PORT, HOST, () => {
-  console.log(`[paypal-checkout] listening on http://${HOST}:${PORT}`);
-  console.log(`[paypal-checkout] env=${PAYPAL_ENV} api=${PAYPAL_API} configured=${hasPayPalCredentials()} planUnlockConfigured=${Boolean(PLAN_UNLOCK_SECRET)} webhookConfigured=${Boolean(PAYPAL_WEBHOOK_ID)} localFallback=${ALLOW_LOCAL_FALLBACK}`);
-  console.log(`[paypal-checkout] return=${RETURN_URL} cancel=${CANCEL_URL}`);
-  console.log(`[paypal-checkout] stateDir=${STATE_DIR}`);
-  console.log(`[paypal-checkout] plans=${Object.keys(PLANS).join(', ')}`);
-});
+server.listen(PORT, HOST, () => console.log(`[paypal-checkout] listening on http://${HOST}:${PORT} env=${PAYPAL_ENV} paypal=${hasPayPalCredentials() ? 'configured' : 'missing'} fallback=${ALLOW_LOCAL_FALLBACK ? 'enabled' : 'disabled'}`));
