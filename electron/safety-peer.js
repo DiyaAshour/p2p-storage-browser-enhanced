@@ -30,7 +30,25 @@ export function isSafetyPeerEnabled() {
 export function shouldUseSafetyPeer(chunk = {}) {
   if (!isSafetyPeerEnabled()) return false;
   if (SAFETY_PEER_MODE === 'always') return true;
-  return Boolean(chunk.forceSafetyPeer || chunk.emergencySafety || chunk.safetyRequired);
+  return Boolean(
+    chunk.forceSafetyPeer ||
+    chunk.emergencySafety ||
+    chunk.safetyRequired ||
+    chunk.safetyReason ||
+    chunk.reason ||
+    chunk.source === 'upload-time-safety' ||
+    chunk.source === 'repair-safety'
+  );
+}
+
+function normalizeSafetyChunk(chunk = {}, reason = 'explicit-safety-call') {
+  return {
+    ...chunk,
+    forceSafetyPeer: true,
+    emergencySafety: true,
+    safetyRequired: true,
+    safetyReason: chunk.safetyReason || chunk.reason || reason,
+  };
 }
 
 function normalizeChunkHash(chunkHash = '') {
@@ -102,19 +120,20 @@ async function withSafetySocket(work) {
 }
 
 export async function putChunkToSafetyPeer(chunk, fromPeerId = 'desktop-client') {
-  if (!shouldUseSafetyPeer(chunk)) {
+  const safetyChunk = normalizeSafetyChunk(chunk, 'explicit-safety-peer-put');
+  if (!shouldUseSafetyPeer(safetyChunk)) {
     const skipped = { ok: false, skipped: true, reason: `safety-peer-${SAFETY_PEER_MODE}-not-required` };
-    safetyLog('put skipped', { chunkHash: chunk?.hash || '', fromPeerId, reason: skipped.reason }, 'warn');
+    safetyLog('put skipped', { chunkHash: safetyChunk?.hash || '', fromPeerId, reason: skipped.reason }, 'warn');
     return skipped;
   }
-  if (!chunk?.hash || !chunk?.data) throw new Error('Invalid chunk for safety peer put');
+  if (!safetyChunk?.hash || !safetyChunk?.data) throw new Error('Invalid chunk for safety peer put');
 
-  const hash = normalizeChunkHash(chunk.hash);
+  const hash = normalizeChunkHash(safetyChunk.hash);
   safetyLog('put start', {
     chunkHash: hash,
     fromPeerId,
-    bytesBase64: String(chunk.data || '').length,
-    reason: chunk.safetyReason || chunk.reason || (chunk.emergencySafety ? 'emergency' : 'requested'),
+    bytesBase64: String(safetyChunk.data || '').length,
+    reason: safetyChunk.safetyReason || safetyChunk.reason || (safetyChunk.emergencySafety ? 'emergency' : 'requested'),
   });
 
   try {
@@ -125,7 +144,7 @@ export async function putChunkToSafetyPeer(chunk, fromPeerId = 'desktop-client')
         type: 'chunk:put',
         fromPeerId,
         createdAt: Date.now(),
-        payload: { chunk: { ...chunk, hash } },
+        payload: { chunk: { ...safetyChunk, hash } },
       }));
       const message = await waitForMessage(socket, (msg) => {
         if (msg.type === 'chunk:error') return true;
