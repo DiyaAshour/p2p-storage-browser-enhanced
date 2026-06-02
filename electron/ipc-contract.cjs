@@ -84,6 +84,7 @@ const IPC_CHANNELS = Object.freeze([
 
   'audit:list',
   'audit:record',
+  'audit:append',
   'audit:clear',
   'audit:listManifests',
 
