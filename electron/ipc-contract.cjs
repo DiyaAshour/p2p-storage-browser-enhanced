@@ -53,7 +53,9 @@ const IPC_CHANNELS = Object.freeze([
   'wallet:connect',
   'wallet:disconnect',
   'wallet:setPlan',
+  'paypal:createSubscription',
   'paypal:openCheckout',
+  'paypal:confirmSubscription',
 
   'seed:create',
   'seed:login',
