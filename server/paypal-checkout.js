@@ -101,6 +101,39 @@ function signPlanUnlock(payload) {
   return crypto.createHmac('sha256', PLAN_UNLOCK_SECRET).update(planUnlockPayload(payload)).digest('hex');
 }
 
+function timingSafeEqualText(a = '', b = '') {
+  const left = Buffer.from(String(a || ''));
+  const right = Buffer.from(String(b || ''));
+  return left.length === right.length && left.length > 0 && crypto.timingSafeEqual(left, right);
+}
+
+function verifyPlanUnlockToken({ wallet, planId, paidUntil, orderId, planUnlockToken }) {
+  const resolvedPlan = resolvePlan(planId);
+  const normalizedWallet = normalizeWallet(wallet);
+  if (!/^0x[a-f0-9]{40}$/.test(normalizedWallet)) throw new Error('Valid wallet address required');
+
+  const expiry = Number(paidUntil || 0);
+  if (!Number.isFinite(expiry) || expiry <= Math.floor(Date.now() / 1000)) {
+    throw new Error('Plan unlock is expired');
+  }
+
+  const normalizedOrderId = String(orderId || '').trim();
+  if (!normalizedOrderId) throw new Error('PayPal order id required');
+
+  const token = String(planUnlockToken || '').trim().toLowerCase();
+  if (!/^[a-f0-9]{64}$/.test(token)) throw new Error('Plan unlock token is missing or invalid');
+
+  const expected = signPlanUnlock({
+    wallet: normalizedWallet,
+    planId: resolvedPlan.id,
+    paidUntil: expiry,
+    orderId: normalizedOrderId,
+  });
+
+  if (!timingSafeEqualText(token, expected)) throw new Error('Plan unlock token verification failed');
+  return { wallet: normalizedWallet, planId: resolvedPlan.id, paidUntil: expiry, orderId: normalizedOrderId };
+}
+
 function send(res, status, payload) {
   res.writeHead(status, {
     'content-type': 'application/json; charset=utf-8',
@@ -291,6 +324,18 @@ async function handleCaptureOrder(req, res) {
   });
 }
 
+async function handleVerifyUnlock(req, res) {
+  const body = await readBody(req);
+  const verified = verifyPlanUnlockToken({
+    wallet: body.wallet || body.walletAddress || body.address,
+    planId: body.planId || body.plan || body.subscriptionPlan,
+    paidUntil: body.paidUntil,
+    orderId: body.orderId || body.paypalOrderId || body.captureId || body.txHash,
+    planUnlockToken: body.planUnlockToken || body.unlockToken,
+  });
+  return send(res, 200, { ok: true, verified, planUnlockVersion: PLAN_UNLOCK_VERSION });
+}
+
 function router(req, res) {
   const url = new URL(req.url || '/', 'http://localhost');
   const route = url.pathname.replace(/\/+$/, '') || '/';
@@ -314,6 +359,7 @@ function router(req, res) {
 
   if (req.method === 'POST' && ['/paypal/create-order', '/create-order', '/paypal/create', '/create'].includes(route)) return handleCreateOrder(req, res);
   if (req.method === 'POST' && ['/paypal/capture-order', '/capture-order', '/paypal/confirm', '/confirm'].includes(route)) return handleCaptureOrder(req, res);
+  if (req.method === 'POST' && ['/paypal/verify-unlock', '/verify-unlock', '/paypal/verify', '/verify'].includes(route)) return handleVerifyUnlock(req, res);
 
   return send(res, 404, { ok: false, error: 'Not found' });
 }
