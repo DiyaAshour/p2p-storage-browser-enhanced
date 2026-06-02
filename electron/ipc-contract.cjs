@@ -53,6 +53,7 @@ const IPC_CHANNELS = Object.freeze([
   'wallet:connect',
   'wallet:disconnect',
   'wallet:setPlan',
+  'paypal:openCheckout',
 
   'seed:create',
   'seed:login',
@@ -95,6 +96,7 @@ const RETRYABLE_IPC_PREFIXES = Object.freeze([
   'seed:',
   'company:',
   'drive:',
+  'paypal:',
 ]);
 
 function isAllowedIpcChannel(channel) {
