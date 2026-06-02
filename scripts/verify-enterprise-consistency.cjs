@@ -29,6 +29,9 @@ const preloadEsm = read('electron/preload.js');
 const config = read('electron/core/config.js');
 const replication = read('electron/replication-engine.js');
 const app = read('client/src/NativeP2PAppLive.tsx');
+const companyStore = read('electron/company-workspace-store.js');
+const companyObjects = read('electron/company-distributed-objects-ipc.js');
+const mainWrapper = read('electron/main-wrapper.js');
 
 requireIncludes('electron/preload.cjs', 'IPC_CHANNELS', 'preload.cjs must allow channels from the shared IPC contract, not a hand-written stale list');
 requireIncludes('electron/preload.js', 'IPC_CHANNELS', 'preload.js must allow channels from the shared IPC contract, not a hand-written stale list');
@@ -71,10 +74,42 @@ for (const channel of ['paypal:openCheckout', 'company:joinWorkspace', 'audit:li
   if (!ipcContract.includes(`'${channel}'`)) fail.push(`electron/ipc-contract.cjs: expected contract channel ${channel}`);
 }
 
+for (const needle of [
+  'assertCanManage(workspace)',
+  'assertCanDeleteWorkspace(workspace)',
+  'roleCanUpload(this.localRole(workspace))',
+  'canControlFile(workspace, file)',
+  'visibleFiles(workspace)',
+]) {
+  if (!companyStore.includes(needle)) fail.push(`electron/company-workspace-store.js: missing backend permission guard marker: ${needle}`);
+}
+
+for (const needle of [
+  'hardenedCompanyState',
+  'safeWorkspaceForState',
+  'files: store.visibleFiles(workspace)',
+  'signedPortableInvite',
+  'hardenedJoinWorkspace',
+  'assertSignedPayload(invite, \'company invite\')',
+  'if (!s.verifyWorkspace(importedWorkspace))',
+  'Invite signer is not allowed to manage this workspace',
+  'Invite token does not match a pending workspace invitation',
+  'hardenedAuditList',
+  'hardenedAuditRecord',
+  'assertWorkspaceMember(s, workspace)',
+  'replicas = 4',
+]) {
+  if (!companyObjects.includes(needle)) fail.push(`electron/company-distributed-objects-ipc.js: missing company hardening marker: ${needle}`);
+}
+
+if (!mainWrapper.includes("company-distributed-objects-ipc.js")) {
+  fail.push('electron/main-wrapper.js: company distributed object hardening module is not imported');
+}
+
 if (fail.length) {
   console.error('[verify-enterprise-consistency] failed');
   for (const item of fail) console.error(`- ${item}`);
   process.exit(1);
 }
 
-console.log('[verify-enterprise-consistency] ok: IPC preload, enterprise channels, and replica target are consistent');
+console.log('[verify-enterprise-consistency] ok: IPC preload, enterprise channels, replica target, and company backend permissions are consistent');
