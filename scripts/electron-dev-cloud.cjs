@@ -58,7 +58,7 @@ function runOptionalScript(scriptPath) {
 loadLocalEnv('.env.local');
 loadLocalEnv('.env');
 
-setDefault('P2P_TARGET_REPLICAS', '3');
+setDefault('P2P_TARGET_REPLICAS', '4');
 setDefault('P2P_BOOTSTRAP_URL', `ws://${serverIp}:8788`);
 setDefault('P2P_MANIFEST_SYNC_URL', `http://${serverIp}:8790`);
 setDefault('P2P_MANIFEST_SYNC_DISABLED', 'false');
@@ -70,6 +70,13 @@ setDefault('PAYPAL_CHECKOUT_URL', `http://${serverIp}:8791`);
 setDefault('VITE_PAYPAL_CHECKOUT_URL', process.env.PAYPAL_CHECKOUT_URL);
 setDefault('PAYPAL_RETURN_URL', 'https://example.com/chunknet-payment-success');
 setDefault('PAYPAL_CANCEL_URL', 'https://example.com/chunknet-payment-cancel');
+
+// Source guards must run before any Electron process is spawned. This makes
+// pnpm run electron:dev self-healing even when developers skip pnpm run verify.
+runOptionalScript('scripts/ensure-cloud-defaults.cjs');
+runOptionalScript('scripts/ensure-renderer-paypal-ipc.cjs');
+runOptionalScript('scripts/ensure-hard-delete-cleanup-audit.cjs');
+runOptionalScript('scripts/ensure-protection-retry-early-ipc.cjs');
 
 runOptionalScript('scripts/apply-paypal-checkout-runtime.cjs');
 runOptionalScript('scripts/apply-paypal-subscriptions-runtime.cjs');
