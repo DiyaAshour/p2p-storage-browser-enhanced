@@ -56,8 +56,17 @@ const PLAN_ALIASES = {
 
 const pendingOrders = new Map();
 
-function normalizeWallet(address = '') {
-  return String(address || '').trim().toLowerCase();
+function normalizeIdentity(identity = '') {
+  return String(identity || '').trim().toLowerCase();
+}
+
+function isValidPaidIdentity(identity = '') {
+  const value = normalizeIdentity(identity);
+  return /^0x[a-f0-9]{40}$/.test(value) || /^seed:[a-z0-9][a-z0-9:_@.\-]{2,191}$/i.test(value);
+}
+
+function paidIdentityFromPayload(body = {}) {
+  return normalizeIdentity(body.wallet || body.accountId || body.identity || body.walletAddress || body.address || body.seedAccount || body.username);
 }
 
 function resolvePlan(value = '') {
@@ -69,7 +78,7 @@ function resolvePlan(value = '') {
 }
 
 function planUnlockPayload({ wallet, planId, paidUntil, orderId }) {
-  return JSON.stringify({ version: PLAN_UNLOCK_VERSION, wallet: normalizeWallet(wallet), planId: String(planId || '').trim(), paidUntil: Number(paidUntil || 0), orderId: String(orderId || '').trim() });
+  return JSON.stringify({ version: PLAN_UNLOCK_VERSION, wallet: normalizeIdentity(wallet), planId: String(planId || '').trim(), paidUntil: Number(paidUntil || 0), orderId: String(orderId || '').trim() });
 }
 
 function signPlanUnlock(payload) {
@@ -86,17 +95,17 @@ function timingSafeEqualText(a = '', b = '') {
 function verifyPlanUnlockToken({ wallet, planId, paidUntil, orderId, planUnlockToken }) {
   const resolvedPlan = resolvePlan(planId);
   if (Number(resolvedPlan.priceUsd || 0) <= 0) throw new Error('Only paid plans can be unlocked by payment token');
-  const normalizedWallet = normalizeWallet(wallet);
-  if (!/^0x[a-f0-9]{40}$/.test(normalizedWallet)) throw new Error('Valid wallet address required');
+  const identity = normalizeIdentity(wallet);
+  if (!isValidPaidIdentity(identity)) throw new Error('Valid paid wallet or seed account identity required');
   const expiry = Number(paidUntil || 0);
   if (!Number.isFinite(expiry) || expiry <= Math.floor(Date.now() / 1000)) throw new Error('Plan unlock is expired');
   const normalizedOrderId = String(orderId || '').trim();
   if (!normalizedOrderId) throw new Error('PayPal order id required');
   const token = String(planUnlockToken || '').trim().toLowerCase();
   if (!/^[a-f0-9]{64}$/.test(token)) throw new Error('Plan unlock token is missing or invalid');
-  const expected = signPlanUnlock({ wallet: normalizedWallet, planId: resolvedPlan.id, paidUntil: expiry, orderId: normalizedOrderId });
+  const expected = signPlanUnlock({ wallet: identity, planId: resolvedPlan.id, paidUntil: expiry, orderId: normalizedOrderId });
   if (!timingSafeEqualText(token, expected)) throw new Error('Plan unlock token verification failed');
-  return { wallet: normalizedWallet, planId: resolvedPlan.id, paidUntil: expiry, orderId: normalizedOrderId };
+  return { wallet: identity, planId: resolvedPlan.id, paidUntil: expiry, orderId: normalizedOrderId };
 }
 
 function send(res, status, payload) {
@@ -177,8 +186,8 @@ async function handleCreateOrder(req, res) {
   const body = await readBody(req);
   const plan = resolvePlan(body.planId || body.plan || body.subscriptionPlan || body.selectedPlan);
   if (Number(plan.priceUsd || 0) <= 0) throw new Error(`${plan.name} does not require PayPal checkout`);
-  const wallet = normalizeWallet(body.wallet || body.walletAddress || body.address);
-  if (!/^0x[a-f0-9]{40}$/.test(wallet)) throw new Error('Valid wallet address required');
+  const wallet = paidIdentityFromPayload(body);
+  if (!isValidPaidIdentity(wallet)) throw new Error('Valid paid wallet or seed account identity required');
   let order;
   if (hasPayPalCredentials()) {
     order = await createRealPayPalOrder(plan, wallet);
@@ -200,7 +209,7 @@ async function handleCaptureOrder(req, res) {
   const orderId = String(body.orderId || body.id || body.token || '').trim();
   if (!orderId) throw new Error('PayPal order id required');
   const requestedPlan = body.planId || body.plan || body.subscriptionPlan;
-  const wallet = normalizeWallet(body.wallet || body.walletAddress || body.address);
+  const wallet = paidIdentityFromPayload(body);
   const pending = pendingOrders.get(orderId);
   let capture = null;
   if (hasPayPalCredentials() && !orderId.startsWith('local-paypal-')) {
@@ -211,9 +220,10 @@ async function handleCaptureOrder(req, res) {
   const plan = resolvePlan(requestedPlan || pending?.planId);
   if (Number(plan.priceUsd || 0) <= 0) throw new Error(`${plan.name} does not require PayPal capture`);
   if (pending?.planId && pending.planId !== plan.id) throw new Error('Subscription plan does not match selected app plan');
-  if (pending?.wallet && wallet && pending.wallet !== wallet) throw new Error('Wallet does not match pending PayPal order');
+  if (pending?.wallet && wallet && pending.wallet !== wallet) throw new Error('Wallet or seed account identity does not match pending PayPal order');
   const paidUntil = oneMonthFromNowSeconds();
   const unlockWallet = wallet || pending?.wallet;
+  if (!isValidPaidIdentity(unlockWallet)) throw new Error('Valid paid wallet or seed account identity required');
   const planUnlockToken = signPlanUnlock({ wallet: unlockWallet, planId: plan.id, paidUntil, orderId });
   pendingOrders.delete(orderId);
   return send(res, 200, { ok: true, captured: true, orderId, id: orderId, planId: plan.id, plan, wallet: unlockWallet, paidUntil, planUnlockVersion: PLAN_UNLOCK_VERSION, planUnlockToken, capture });
@@ -221,7 +231,7 @@ async function handleCaptureOrder(req, res) {
 
 async function handleVerifyUnlock(req, res) {
   const body = await readBody(req);
-  const verified = verifyPlanUnlockToken({ wallet: body.wallet || body.walletAddress || body.address, planId: body.planId || body.plan || body.subscriptionPlan, paidUntil: body.paidUntil, orderId: body.orderId || body.paypalOrderId || body.captureId || body.txHash, planUnlockToken: body.planUnlockToken || body.unlockToken });
+  const verified = verifyPlanUnlockToken({ wallet: body.wallet || body.accountId || body.identity || body.walletAddress || body.address || body.seedAccount || body.username, planId: body.planId || body.plan || body.subscriptionPlan, paidUntil: body.paidUntil, orderId: body.orderId || body.paypalOrderId || body.subscriptionId || body.captureId || body.txHash, planUnlockToken: body.planUnlockToken || body.unlockToken });
   return send(res, 200, { ok: true, verified, planUnlockVersion: PLAN_UNLOCK_VERSION });
 }
 
