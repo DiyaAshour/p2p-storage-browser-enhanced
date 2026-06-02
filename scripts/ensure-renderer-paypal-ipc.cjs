@@ -1,10 +1,14 @@
 const fs = require('node:fs');
 const path = require('node:path');
 
-const file = path.join(process.cwd(), 'client', 'src', 'NativeP2PAppLive.tsx');
-if (!fs.existsSync(file)) throw new Error(`Missing ${file}`);
+const root = process.cwd();
+const rendererFile = path.join(root, 'client', 'src', 'NativeP2PAppLive.tsx');
+const mainWrapperFile = path.join(root, 'electron', 'main-wrapper.js');
 
-let src = fs.readFileSync(file, 'utf8');
+if (!fs.existsSync(rendererFile)) throw new Error(`Missing ${rendererFile}`);
+if (!fs.existsSync(mainWrapperFile)) throw new Error(`Missing ${mainWrapperFile}`);
+
+let src = fs.readFileSync(rendererFile, 'utf8');
 let changed = false;
 
 function replaceOnce(find, replace, label) {
@@ -202,5 +206,16 @@ if (!src.includes('"paypal:createSubscription"') || !src.includes('"paypal:confi
   throw new Error('Renderer is missing PayPal subscription IPC channels.');
 }
 
-if (changed) fs.writeFileSync(file, src, 'utf8');
+if (changed) fs.writeFileSync(rendererFile, src, 'utf8');
+
+let main = fs.readFileSync(mainWrapperFile, 'utf8');
+if (!main.includes("./paypal-subscription-ipc.js")) {
+  const marker = "    await import('./wallet-plan-guard.js');\n    console.log('[main-wrapper] wallet plan guard import finished');\n";
+  const replacement = `${marker}    await import('./paypal-subscription-ipc.js');\n    console.log('[main-wrapper] paypal subscription IPC import finished');\n`;
+  if (!main.includes(marker)) throw new Error('Could not find wallet-plan-guard import marker in main-wrapper.js');
+  main = main.replace(marker, replacement);
+  fs.writeFileSync(mainWrapperFile, main, 'utf8');
+  console.log('[ensure-renderer-paypal-ipc] installed paypal subscription IPC import in main-wrapper.js');
+}
+
 console.log('[ensure-renderer-paypal-ipc] ok');
