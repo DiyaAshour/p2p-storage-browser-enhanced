@@ -2,14 +2,17 @@ import { WebSocket } from 'ws';
 
 export const SAFETY_PEER_REPLICA_ID = 'aws-safety-peer';
 
-const DEFAULT_SAFETY_PEER_URL = 'ws://54.166.171.208:8787';
+const DEFAULT_SAFETY_PEER_URL = 'ws://54.166.171.208:8792';
 const SAFETY_PEER_TIMEOUT_MS = Number(process.env.P2P_SAFETY_PEER_TIMEOUT_MS || 15000);
 const SAFETY_PEER_MODE = String(process.env.P2P_SAFETY_PEER_MODE || 'emergency').trim().toLowerCase();
-const SAFETY_PEER_DELETE_TOKEN = String(
-  process.env.P2P_SAFETY_PEER_DELETE_TOKEN ||
-  process.env.STORAGE_PEER_ADMIN_TOKEN ||
-  ''
-).trim();
+
+function safetyPeerDeleteToken() {
+  return String(
+    process.env.P2P_SAFETY_PEER_DELETE_TOKEN ||
+    process.env.STORAGE_PEER_ADMIN_TOKEN ||
+    ''
+  ).trim();
+}
 
 export function safetyPeerUrl() {
   return String(
@@ -131,6 +134,10 @@ export async function getChunkFromSafetyPeer(chunkHash, fromPeerId = 'desktop-cl
 export async function deleteChunkFromSafetyPeer(chunkHash, fromPeerId = 'desktop-client') {
   if (!isSafetyPeerEnabled()) return { ok: false, skipped: true, reason: 'safety-peer-disabled' };
   const hash = normalizeChunkHash(chunkHash);
+  const adminToken = safetyPeerDeleteToken();
+  if (!adminToken) {
+    throw new Error('Safety peer delete token is not configured. Set P2P_SAFETY_PEER_DELETE_TOKEN before starting Electron.');
+  }
   return withSafetySocket(async (socket) => {
     socket.send(JSON.stringify({ type: 'peer:hello', fromPeerId }));
     socket.send(JSON.stringify({
@@ -140,11 +147,13 @@ export async function deleteChunkFromSafetyPeer(chunkHash, fromPeerId = 'desktop
       createdAt: Date.now(),
       payload: {
         chunkHash: hash,
-        adminToken: SAFETY_PEER_DELETE_TOKEN || undefined,
+        adminToken,
       },
     }));
     const message = await waitForMessage(socket, (msg) => ['chunk:deleted', 'chunk:not-found', 'chunk:error'].includes(msg.type));
-    if (message.type === 'chunk:error') throw new Error(message.error || 'Safety peer failed to delete chunk');
+    if (message.type === 'chunk:error') {
+      throw new Error(message.error || 'Safety peer failed to delete chunk');
+    }
     if (message.type === 'chunk:not-found') return { ok: true, alreadyMissing: true, peerUrl: safetyPeerUrl(), chunkHash: hash, replicaId: SAFETY_PEER_REPLICA_ID };
     return { ok: true, peerUrl: safetyPeerUrl(), chunkHash: hash, replicaId: SAFETY_PEER_REPLICA_ID };
   });
