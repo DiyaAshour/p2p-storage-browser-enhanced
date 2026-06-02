@@ -6,16 +6,21 @@ const rendererPath = path.join(process.cwd(), 'client', 'src', 'NativeP2PAppLive
 let source = fs.readFileSync(rendererPath, 'utf8');
 const before = source;
 
-function replaceOnce(label, from, to) {
+function replaceOnce(from, to) {
   if (!source.includes(from)) return false;
   source = source.replace(from, to);
+  return true;
+}
+
+function replaceRegex(pattern, to) {
+  if (!pattern.test(source)) return false;
+  source = source.replace(pattern, to);
   return true;
 }
 
 // Add modal state once.
 if (!source.includes('planPickerOpen')) {
   replaceOnce(
-    'plan picker state',
     `  const [payingPlanId, setPayingPlanId] = useState<string>("");`,
     `  const [payingPlanId, setPayingPlanId] = useState<string>("");
   const [planPickerOpen, setPlanPickerOpen] = useState(false);`
@@ -25,7 +30,6 @@ if (!source.includes('planPickerOpen')) {
 // Add plan helpers once.
 if (!source.includes('const visiblePaidPlans = useMemo(')) {
   replaceOnce(
-    'plan helpers',
     `  const quota = wallet?.plan?.quotaBytes
     ? Math.min(100, (wallet.usedBytes / wallet.plan.quotaBytes) * 100)
     : 0;`,
@@ -66,7 +70,7 @@ source = source.replace(
         toast.success(\`\${captured.plan?.name || plan.name} plan activated\`);`
 );
 
-// Remove old always-visible plan buttons.
+// Remove old always-visible plan buttons when the exact block is still present.
 const oldButtons = `          {wallet?.plans?.length ? (
             <div className="mt-3 flex flex-wrap gap-2">
               {wallet.plans
@@ -95,14 +99,6 @@ const oldButtons = `          {wallet?.plans?.length ? (
 
 `;
 source = source.replace(oldButtons, '');
-
-// Replace the small current-plan label with a real current-plan + upgrade/change button and modal.
-const oldPlanLabel = `          {wallet?.plan && (
-            <span className="flex items-center gap-1">
-              <Cloud className="size-3" />
-              {wallet.plan.name}
-            </span>
-          )}`;
 
 const newPlanPicker = `          {wallet?.connected && (
             <span className="flex items-center gap-2">
@@ -205,8 +201,35 @@ const newPlanPicker = `          {wallet?.connected && (
           )}`;
 
 if (!source.includes('Choose your Chunknet plan')) {
-  if (!replaceOnce('current plan label', oldPlanLabel, newPlanPicker)) {
-    throw new Error('Could not find current wallet plan label block');
+  // First try to replace the old current-plan label.
+  const oldPlanLabelExact = `          {wallet?.plan && (
+            <span className="flex items-center gap-1">
+              <Cloud className="size-3" />
+              {wallet.plan.name}
+            </span>
+          )}`;
+
+  let inserted = replaceOnce(oldPlanLabelExact, newPlanPicker);
+
+  // If previous runtime patches changed whitespace, remove that label by regex.
+  if (!inserted) {
+    inserted = replaceRegex(
+      /\s*\{wallet\?\.plan\s*&&\s*\(\s*<span className="flex items-center gap-1">\s*<Cloud className="size-3"\s*\/>\s*\{wallet\.plan\.name\}\s*<\/span>\s*\)\}/m,
+      `\n${newPlanPicker}`
+    );
+  }
+
+  // If the label is already gone, insert the picker right after the peers label.
+  if (!inserted) {
+    inserted = replaceRegex(
+      /(\s*<span className="flex items-center gap-1">\s*<Wifi className="size-3"\s*\/>\s*\{peerCount\} peers\s*<\/span>)/m,
+      `$1\n\n${newPlanPicker}`
+    );
+  }
+
+  // Last fallback: do not crash dev startup. Make the issue visible in logs only.
+  if (!inserted) {
+    console.warn('[plan-upgrade-modal-runtime] header anchor not found; skipped plan picker insertion');
   }
 }
 
