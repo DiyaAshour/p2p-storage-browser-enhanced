@@ -59,6 +59,7 @@ type Channel =
   | "wallet:status"
   | "wallet:connect"
   | "wallet:disconnect"
+  | "paypal:openCheckout"
   | "seed:create"
   | "seed:login"
   | "seed:recover"
@@ -82,7 +83,14 @@ type Channel =
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 type Bridge = { invoke: <T>(channel: Channel, payload?: unknown) => Promise<T> };
-type Plan = { id: string; name: string; quotaBytes: number; priceUsd: number };
+type Plan = {
+  id: string;
+  name: string;
+  quotaBytes: number;
+  priceUsd: number;
+  locked?: boolean;
+  description?: string;
+};
 
 type WalletState = {
   connected: boolean;
@@ -230,7 +238,9 @@ const WALLETCONNECT_PROJECT_ID =
   (import.meta as any).env?.VITE_WALLETCONNECT_PROJECT_ID ||
   "821b9d64c996dc59c7d18583fc7081f0";
 
-const WALLETCONNECT_CHAIN_ID = "eip155:1"; // Ethereum Mainnet
+const PAYPAL_CHECKOUT_URL =
+  ((import.meta as any).env?.VITE_PAYPAL_CHECKOUT_URL as string) ||
+  "http://54.166.171.208:8791"; // Ethereum Mainnet
 
 // ─── Helpers ──────────────────────────────────────────────────────────────────
 function getBridge(): Bridge | null {
@@ -456,6 +466,8 @@ export default function NativeP2PAppLive() {
   const [company, setCompany] = useState<CompanyState | null>(null);
 const [auditEvents, setAuditEvents] = useState<AuditEvent[]>([]);
 const [busy, setBusy] = useState(false);
+const [planPickerOpen, setPlanPickerOpen] = useState(false);
+const [payingPlanId, setPayingPlanId] = useState("");
   const [view, setView] = useState<View>("personal");
   const [search, setSearch] = useState("");
   const isEncrypted = true;
@@ -475,74 +487,6 @@ const [joinInviteToken, setJoinInviteToken] = useState("");
   const PAYPAL_CHECKOUT_URL = "http://127.0.0.1:8791";
   const [payingPlanId, setPayingPlanId] = useState<string>("");
 
-  const buyPlan = (plan: Plan) =>
-    run(async () => {
-      if (!identityConnected) {
-        throw new Error("Connect wallet or sign in first");
-      }
-
-      const walletAddress = wallet?.accountId || wallet?.address;
-      if (!walletAddress) {
-        throw new Error("Missing wallet/account identity");
-      }
-
-      setPayingPlanId(plan.id);
-
-      try {
-        const createRes = await fetch(`${PAYPAL_CHECKOUT_URL}/paypal/create-order`, {
-          method: "POST",
-          headers: { "content-type": "application/json" },
-          body: JSON.stringify({
-            planId: plan.id,
-            wallet: walletAddress,
-          }),
-        });
-
-        const created = await createRes.json();
-
-        if (!createRes.ok || !created?.ok || !created?.approveUrl) {
-          throw new Error(created?.error || "Could not create PayPal checkout");
-        }
-
-        window.open(created.approveUrl, "_blank");
-
-        await showInfo(
-          "Complete PayPal payment",
-          "PayPal checkout opened in your browser.\n\nAfter completing the payment, click OK here to activate your plan."
-        );
-
-        const captureRes = await fetch(`${PAYPAL_CHECKOUT_URL}/paypal/capture-order`, {
-          method: "POST",
-          headers: { "content-type": "application/json" },
-          body: JSON.stringify({
-            orderId: created.orderId,
-            planId: plan.id,
-            wallet: walletAddress,
-          }),
-        });
-
-        const captured = await captureRes.json();
-
-        if (!captureRes.ok || !captured?.ok || !captured?.planUnlockToken) {
-          throw new Error(captured?.error || "Payment was not completed");
-        }
-
-        const nextWallet = await api!.invoke<WalletState>("wallet:setPlan", {
-          planId: captured.planId,
-          paidUntil: captured.paidUntil,
-          txHash: captured.orderId,
-          orderId: captured.orderId,
-          planUnlockToken: captured.planUnlockToken,
-        });
-
-        setWallet(nextWallet);
-        await refresh();
-
-        toast.success(`${captured.plan?.name || plan.name} plan activated`);
-      } finally {
-        setPayingPlanId("");
-      }
-    });
 
   // Bulk select state
   const [selectedItemIds, setSelectedItemIds] = useState<Set<string>>(new Set());
@@ -592,6 +536,77 @@ const [joinInviteToken, setJoinInviteToken] = useState("");
     ? Math.min(100, (wallet.usedBytes / wallet.plan.quotaBytes) * 100)
     : 0;
 
+  const defaultPaidPlans = useMemo<Plan[]>(
+  () => [
+    {
+      id: "starter",
+      name: "Starter",
+      quotaBytes: 100 * 1024 ** 3,
+      priceUsd: 2.99,
+      locked: true,
+      description: "100 GB storage plan",
+    },
+    {
+      id: "personal",
+      name: "Personal",
+      quotaBytes: 1 * 1024 ** 4,
+      priceUsd: 7.99,
+      locked: true,
+      description: "1 TB storage plan",
+    },
+    {
+      id: "plus",
+      name: "Plus",
+      quotaBytes: 3 * 1024 ** 4,
+      priceUsd: 14.99,
+      locked: true,
+      description: "3 TB storage plan",
+    },
+    {
+      id: "pro",
+      name: "Pro",
+      quotaBytes: 7 * 1024 ** 4,
+      priceUsd: 24.99,
+      locked: true,
+      description: "7 TB storage plan",
+    },
+    {
+      id: "ultra",
+      name: "Ultra",
+      quotaBytes: 10 * 1024 ** 4,
+      priceUsd: 34.99,
+      locked: true,
+      description: "10 TB storage plan",
+    },
+  ],
+  []
+);
+
+const visiblePaidPlans = useMemo(() => {
+  const remotePlans = (wallet?.plans || [])
+    .filter((plan) => Number(plan.priceUsd || 0) > 0)
+    .filter((plan) => !["tb1", "tb3", "tb7", "tb10"].includes(plan.id));
+
+  return (remotePlans.length ? remotePlans : defaultPaidPlans)
+    .slice()
+    .sort((a, b) => Number(a.quotaBytes || 0) - Number(b.quotaBytes || 0));
+}, [wallet?.plans, defaultPaidPlans]);
+
+const currentPlanName = wallet?.plan?.name || "Free";
+const currentPlanId = wallet?.planId || wallet?.plan?.id || "free";
+const usedBytes = Number(wallet?.usedBytes || 0);
+
+const canSelectPlan = (plan: Plan) => {
+  const active = currentPlanId === plan.id || wallet?.plan?.id === plan.id;
+  return active || Number(plan.quotaBytes || 0) >= usedBytes;
+};
+
+const planSize = (plan: Plan) => {
+  const size = Number(plan.quotaBytes || 0);
+  if (size >= 1024 ** 4) return `${Math.round(size / 1024 ** 4)} TB`;
+  return `${Math.round(size / 1024 ** 3)} GB`;
+};
+  
   const folderById = useMemo(() => {
     const map = new Map<string, DriveFolder>();
     for (const folder of manifestFolders) {
@@ -1299,7 +1314,103 @@ const showCompanyFileInfo = (file: P2PFile) => {
       await refresh();
       toast.success("Company workspace created and signed");
     });
+const paidIdentity = () => {
+  const account = String(wallet?.accountId || "").trim();
+  const address = String(wallet?.address || "").trim();
+  const username = String(wallet?.username || "").trim();
 
+  if (account) return account;
+  if (address) return address;
+  if (username) return `seed:${username}`;
+
+  return "";
+};
+
+const buyPlan = (plan: Plan) =>
+  run(async () => {
+    if (!identityConnected) {
+      throw new Error("Connect wallet or sign in with Seed Account before subscribing");
+    }
+
+    if (!api) throw new Error("Electron bridge is not available");
+
+    const identity = paidIdentity();
+    if (!identity) {
+      throw new Error("Valid wallet or seed account identity required");
+    }
+
+    if (!canSelectPlan(plan)) {
+      throw new Error("Delete files first before switching to this lower plan");
+    }
+
+    setPayingPlanId(plan.id);
+
+    try {
+      const createRes = await fetch(`${PAYPAL_CHECKOUT_URL}/paypal/create-subscription`, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({
+          planId: plan.id,
+          wallet: identity,
+          accountId: identity,
+          identity,
+          username: wallet?.username || "",
+        }),
+      });
+
+      const created = await createRes.json().catch(() => ({}));
+
+      if (!createRes.ok || !created?.approveUrl) {
+        throw new Error(created?.error || "Could not create PayPal subscription");
+      }
+
+      const checkout = await api.invoke<{ ok: boolean; cancelled?: boolean }>("paypal:openCheckout", {
+        approveUrl: created.approveUrl,
+        returnUrl: "https://example.com/chunknet-payment-success",
+        cancelUrl: "https://example.com/chunknet-payment-cancel",
+      });
+
+      if (!checkout?.ok) {
+        throw new Error(checkout?.cancelled ? "PayPal subscription cancelled" : "PayPal subscription was not completed");
+      }
+
+      const confirmRes = await fetch(`${PAYPAL_CHECKOUT_URL}/paypal/confirm-subscription`, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({
+          subscriptionId: created.subscriptionId || created.orderId || created.id,
+          orderId: created.orderId || created.subscriptionId || created.id,
+          planId: plan.id,
+          wallet: identity,
+          accountId: identity,
+          identity,
+          username: wallet?.username || "",
+        }),
+      });
+
+      const confirmed = await confirmRes.json().catch(() => ({}));
+
+      if (!confirmRes.ok || !confirmed?.ok) {
+        throw new Error(confirmed?.error || "Subscription was not activated");
+      }
+
+      const nextWallet = await api.invoke<WalletState>("wallet:setPlan", {
+        planId: confirmed.planId || plan.id,
+        paidUntil: confirmed.paidUntil,
+        subscriptionId: confirmed.subscriptionId || confirmed.orderId || created.subscriptionId || created.id,
+        txHash: confirmed.subscriptionId || confirmed.orderId || created.subscriptionId || created.id,
+        planUnlockToken: confirmed.planUnlockToken,
+      });
+
+      setWallet(nextWallet);
+      setPlanPickerOpen(false);
+      await refresh();
+
+      toast.success(`${confirmed.plan?.name || plan.name} plan activated`);
+    } finally {
+      setPayingPlanId("");
+    }
+  });
   const joinWorkspace = () =>
     run(async () => {
       const inviteToken = joinInviteToken.trim();
@@ -2642,6 +2753,93 @@ const failed = results.filter((result) => result.status === "rejected");
     );
   };
 
+  const planPickerModal = (
+  <>
+    {planPickerOpen && (
+      <div className="absolute inset-0 z-50 overflow-y-auto bg-black/70 p-4">
+        <div className="mx-auto my-4 w-full max-w-5xl rounded-2xl border border-zinc-800 bg-zinc-950 p-5 shadow-2xl">
+          <div className="mb-4 flex items-center justify-between gap-3">
+            <div>
+              <h2 className="text-lg font-semibold">Choose your Chunknet plan</h2>
+              <p className="mt-1 text-sm text-zinc-400">
+                Current plan: {currentPlanName} · Used: {bytes(usedBytes)}
+              </p>
+            </div>
+
+            <Button
+              variant="outline"
+              size="sm"
+              onClick={() => setPlanPickerOpen(false)}
+              disabled={busy}
+            >
+              Close
+            </Button>
+          </div>
+
+          <div className="grid gap-3 md:grid-cols-2 xl:grid-cols-3">
+            {visiblePaidPlans.map((plan) => {
+              const active = currentPlanId === plan.id || wallet?.plan?.id === plan.id;
+              const allowed = canSelectPlan(plan);
+              const isBusy = payingPlanId === plan.id;
+
+              return (
+                <Card
+                  key={plan.id}
+                  className={`rounded-2xl border-zinc-800 bg-zinc-900 ${
+                    active ? "ring-2 ring-blue-500" : ""
+                  }`}
+                >
+                  <CardContent className="space-y-3 p-4">
+                    <div>
+                      <p className="text-base font-semibold">{plan.name}</p>
+                      <p className="text-xs text-zinc-400">{planSize(plan)} storage</p>
+                    </div>
+
+                    <div>
+                      <p className="text-2xl font-bold">
+                        ${Number(plan.priceUsd || 0).toFixed(2)}
+                        <span className="text-xs font-normal text-zinc-400"> / month</span>
+                      </p>
+                      <p className="mt-1 text-xs text-zinc-500">
+                        Auto-renewing monthly PayPal subscription
+                      </p>
+                    </div>
+
+                    {!allowed && (
+                      <p className="rounded-lg border border-amber-800 bg-amber-950/40 px-3 py-2 text-xs text-amber-300">
+                        You are using {bytes(usedBytes)}. Delete files first to switch to this lower plan.
+                      </p>
+                    )}
+
+                    <Button
+                      className="w-full"
+                      variant={active ? "default" : "outline"}
+                      disabled={busy || isBusy || active || !allowed}
+                      onClick={() => buyPlan(plan)}
+                    >
+                      {active
+                        ? "Current plan"
+                        : isBusy
+                          ? "Opening PayPal..."
+                          : allowed
+                            ? "Subscribe"
+                            : "Delete files first"}
+                    </Button>
+                  </CardContent>
+                </Card>
+              );
+            })}
+          </div>
+
+          <p className="mt-4 text-xs text-zinc-500">
+            Downgrades are allowed only when your used storage fits inside the lower plan.
+          </p>
+        </div>
+      </div>
+    )}
+  </>
+);
+  
   // ─── JSX ────────────────────────────────────────────────────────────────────
   return (
     <div className="min-h-screen bg-zinc-950 text-zinc-50">
@@ -2753,12 +2951,25 @@ const failed = results.filter((result) => result.status === "rejected");
             {peerCount} peers
           </span>
 
-          {wallet?.plan && (
-            <span className="flex items-center gap-1">
-              <Cloud className="size-3" />
-              {wallet.plan.name}
-            </span>
-          )}
+{wallet?.connected && (
+  <span className="flex items-center gap-2">
+    <span className="flex items-center gap-1">
+      <Cloud className="size-3" />
+      {currentPlanName}
+    </span>
+
+    <Button
+      size="sm"
+      variant="outline"
+      disabled={busy}
+      onClick={() => setPlanPickerOpen(true)}
+      className="h-7 px-3 text-xs"
+    >
+      {Number(wallet?.plan?.priceUsd || 0) > 0 ? "Change plan" : "Upgrade plan"}
+    </Button>
+  </span>
+)}
+          
         </div>
       </header>
 
@@ -2829,7 +3040,8 @@ const failed = results.filter((result) => result.status === "rejected");
           </div>
         </aside>
 
-        <main className="flex-1 overflow-auto bg-zinc-950">
+<main className="relative min-h-0 flex-1 overflow-auto bg-zinc-950">
+  {planPickerModal}
           <Tabs
             value={view}
             onValueChange={(v) => {
