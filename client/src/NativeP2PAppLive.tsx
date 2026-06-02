@@ -484,10 +484,6 @@ const [joinInviteToken, setJoinInviteToken] = useState("");
     () => readJson(ACTIVE_WORKSPACE_KEY, "")
   );
 
-  const PAYPAL_CHECKOUT_URL = "http://127.0.0.1:8791";
-  const [payingPlanId, setPayingPlanId] = useState<string>("");
-
-
   // Bulk select state
   const [selectedItemIds, setSelectedItemIds] = useState<Set<string>>(new Set());
   const [bulkTargetFolderId, setBulkTargetFolderId] = useState<string>("");
@@ -2756,7 +2752,7 @@ const failed = results.filter((result) => result.status === "rejected");
   const planPickerModal = (
   <>
     {planPickerOpen && (
-      <div className="absolute inset-0 z-50 overflow-y-auto bg-black/70 p-4">
+<div className="absolute inset-0 z-50 flex items-start justify-center overflow-y-auto bg-black/70 p-4">
         <div className="mx-auto my-4 w-full max-w-5xl rounded-2xl border border-zinc-800 bg-zinc-950 p-5 shadow-2xl">
           <div className="mb-4 flex items-center justify-between gap-3">
             <div>
@@ -2903,53 +2899,27 @@ const failed = results.filter((result) => result.status === "rejected");
             {bytes(wallet?.usedBytes)} used
           </span>
 
-          {wallet?.plans?.length ? (
-            <div className="mt-3 flex flex-wrap gap-2">
-              {wallet.plans
-                .filter((plan) => plan.priceUsd > 0)
-                .map((plan) => {
-                  const active = wallet.planId === plan.id || wallet.plan?.id === plan.id;
+{wallet?.plan?.quotaBytes && (
+  <span className="flex items-center gap-1">
+    <span className="inline-block h-1.5 w-20 rounded-full bg-zinc-800">
+      <span
+        className="block h-full rounded-full bg-blue-500 transition-all"
+        style={{ width: `${quota}%` }}
+      />
+    </span>
+    {quota.toFixed(0)}%
+  </span>
+)}
 
-                  return (
-                    <Button
-                      key={plan.id}
-                      size="sm"
-                      variant={active ? "default" : "outline"}
-                      disabled={busy || payingPlanId === plan.id}
-                      onClick={() => buyPlan(plan)}
-                      className="text-xs"
-                    >
-                      <Cloud className="size-3" />
-                      {active
-                        ? `${plan.name} Active`
-                        : `${plan.name} · $${plan.priceUsd}/mo`}
-                    </Button>
-                  );
-                })}
-            </div>
-          ) : null}
+<span className="flex items-center gap-1">
+  <ShieldCheck className="size-3" />
+  Smart
+</span>
 
-          {wallet?.plan?.quotaBytes && (
-            <span className="flex items-center gap-1">
-              <span className="inline-block h-1.5 w-20 rounded-full bg-zinc-800">
-                <span
-                  className="block h-full rounded-full bg-blue-500 transition-all"
-                  style={{ width: `${quota}%` }}
-                />
-              </span>
-              {quota.toFixed(0)}%
-            </span>
-          )}
-
-          <span className="flex items-center gap-1">
-            <ShieldCheck className="size-3" />
-            Smart
-          </span>
-
-          <span className="flex items-center gap-1">
-            <Wifi className="size-3" />
-            {peerCount} peers
-          </span>
+<span className="flex items-center gap-1">
+  <Wifi className="size-3" />
+  {peerCount} peers
+</span>
 
 {wallet?.connected && (
   <span className="flex items-center gap-2">
@@ -3040,8 +3010,7 @@ const failed = results.filter((result) => result.status === "rejected");
           </div>
         </aside>
 
-<main className="relative min-h-0 flex-1 overflow-auto bg-zinc-950">
-  {planPickerModal}
+<main className="relative flex min-h-0 flex-1 flex-col overflow-hidden bg-zinc-950">
           <Tabs
             value={view}
             onValueChange={(v) => {
@@ -3505,6 +3474,7 @@ const failed = results.filter((result) => result.status === "rejected");
               )}
             </TabsContent>
           </Tabs>
+    {planPickerModal}
         </main>
       </div>
     </div>
