@@ -18,24 +18,23 @@ function replaceRegex(pattern, to) {
   return true;
 }
 
-// Add modal state once.
-if (!source.includes('planPickerOpen')) {
-  replaceOnce(
+function warn(message) {
+  console.warn(`[plan-upgrade-modal-runtime] ${message}`);
+}
+
+// 1) State: make sure the modal state exists. Do not detect by JSX usage only.
+if (!/const \[planPickerOpen,\s*setPlanPickerOpen\]/.test(source)) {
+  const inserted = replaceOnce(
     `  const [payingPlanId, setPayingPlanId] = useState<string>("");`,
     `  const [payingPlanId, setPayingPlanId] = useState<string>("");
   const [planPickerOpen, setPlanPickerOpen] = useState(false);`
   );
+  if (!inserted) warn('could not insert planPickerOpen state');
 }
 
-// Add plan helpers once.
-if (!source.includes('const visiblePaidPlans = useMemo(')) {
-  replaceOnce(
-    `  const quota = wallet?.plan?.quotaBytes
-    ? Math.min(100, (wallet.usedBytes / wallet.plan.quotaBytes) * 100)
-    : 0;`,
-    `  const quota = wallet?.plan?.quotaBytes
-    ? Math.min(100, (wallet.usedBytes / wallet.plan.quotaBytes) * 100)
-    : 0;
+// 2) Helpers: make sure the variables used by the JSX are defined. The old
+// script incorrectly skipped this when visiblePaidPlans appeared only inside JSX.
+const helperBlock = `
 
   const visiblePaidPlans = useMemo(
     () =>
@@ -59,18 +58,40 @@ if (!source.includes('const visiblePaidPlans = useMemo(')) {
     const size = Number(plan.quotaBytes || 0);
     if (size >= 1024 ** 4) return \`\${Math.round(size / 1024 ** 4)} TB\`;
     return \`\${Math.round(size / 1024 ** 3)} GB\`;
-  };`
+  };`;
+
+if (!/const\s+currentPlanName\s*=/.test(source)) {
+  let inserted = replaceOnce(
+    `  const quota = wallet?.plan?.quotaBytes
+    ? Math.min(100, (wallet.usedBytes / wallet.plan.quotaBytes) * 100)
+    : 0;`,
+    `  const quota = wallet?.plan?.quotaBytes
+    ? Math.min(100, (wallet.usedBytes / wallet.plan.quotaBytes) * 100)
+    : 0;${helperBlock}`
   );
+
+  if (!inserted) {
+    inserted = replaceOnce(
+      `  const peerCount = summary?.connectedPeers ?? 0;`,
+      `  const peerCount = summary?.connectedPeers ?? 0;${helperBlock}`
+    );
+  }
+
+  if (!inserted) {
+    inserted = replaceRegex(/\n\s*const folderById = useMemo\(/, `${helperBlock}\n\n  const folderById = useMemo(`);
+  }
+
+  if (!inserted) warn('could not insert plan helper variables');
 }
 
-// Close modal after successful activation.
+// 3) Close modal after successful activation.
 source = source.replace(
   `        toast.success(\`\${captured.plan?.name || plan.name} plan activated\`);`,
   `        setPlanPickerOpen(false);
         toast.success(\`\${captured.plan?.name || plan.name} plan activated\`);`
 );
 
-// Remove old always-visible plan buttons when the exact block is still present.
+// 4) Remove the old always-visible plan buttons when the exact block is still present.
 const oldButtons = `          {wallet?.plans?.length ? (
             <div className="mt-3 flex flex-wrap gap-2">
               {wallet.plans
@@ -200,8 +221,8 @@ const newPlanPicker = `          {wallet?.connected && (
             </div>
           )}`;
 
+// 5) Insert picker only if not already inserted.
 if (!source.includes('Choose your Chunknet plan')) {
-  // First try to replace the old current-plan label.
   const oldPlanLabelExact = `          {wallet?.plan && (
             <span className="flex items-center gap-1">
               <Cloud className="size-3" />
@@ -211,7 +232,6 @@ if (!source.includes('Choose your Chunknet plan')) {
 
   let inserted = replaceOnce(oldPlanLabelExact, newPlanPicker);
 
-  // If previous runtime patches changed whitespace, remove that label by regex.
   if (!inserted) {
     inserted = replaceRegex(
       /\s*\{wallet\?\.plan\s*&&\s*\(\s*<span className="flex items-center gap-1">\s*<Cloud className="size-3"\s*\/>\s*\{wallet\.plan\.name\}\s*<\/span>\s*\)\}/m,
@@ -219,7 +239,6 @@ if (!source.includes('Choose your Chunknet plan')) {
     );
   }
 
-  // If the label is already gone, insert the picker right after the peers label.
   if (!inserted) {
     inserted = replaceRegex(
       /(\s*<span className="flex items-center gap-1">\s*<Wifi className="size-3"\s*\/>\s*\{peerCount\} peers\s*<\/span>)/m,
@@ -227,10 +246,7 @@ if (!source.includes('Choose your Chunknet plan')) {
     );
   }
 
-  // Last fallback: do not crash dev startup. Make the issue visible in logs only.
-  if (!inserted) {
-    console.warn('[plan-upgrade-modal-runtime] header anchor not found; skipped plan picker insertion');
-  }
+  if (!inserted) warn('header anchor not found; skipped plan picker insertion');
 }
 
 if (before !== source) fs.writeFileSync(rendererPath, source, 'utf8');
