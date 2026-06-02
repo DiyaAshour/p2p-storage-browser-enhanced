@@ -106,6 +106,7 @@
   },
   "devDependencies": {
     "@electron/rebuild": "^3.7.2",
+    "@tailwindcss/vite": "^4.1.17",
     "@types/node": "^20.19.11",
     "@types/react": "^18.3.24",
     "@types/react-dom": "^18.3.7",
@@ -116,7 +117,7 @@
     "esbuild": "^0.25.9",
     "jsdom": "^25.0.1",
     "postcss": "^8.5.6",
-    "tailwindcss": "^3.4.17",
+    "tailwindcss": "^4.1.17",
     "typescript": "^5.9.2",
     "vite": "^5.4.19",
     "vitest": "^2.1.9"
