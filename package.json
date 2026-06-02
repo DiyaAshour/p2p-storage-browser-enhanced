@@ -5,6 +5,7 @@
   "description": "Chunknet is a wallet-based P2P cloud storage desktop app with encrypted chunks, peer discovery, and manifest sync.",
   "author": "Diya Ashour",
   "type": "module",
+  "main": "electron/main.js",
   "license": "MIT",
   "scripts": {
     "ensure:cloud-defaults": "node scripts/ensure-cloud-defaults.cjs",
