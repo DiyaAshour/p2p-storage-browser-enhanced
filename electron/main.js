@@ -22,7 +22,8 @@ const TARGET_REPLICAS = Number(process.env.P2P_TARGET_REPLICAS || 3);
 const AUTO_REPAIR_INTERVAL_MS = Math.max(30_000, Number(process.env.P2P_AUTO_REPAIR_INTERVAL_MS || 60_000));
 const UPLOAD_CONCURRENCY = Math.max(1, Math.min(12, Number(process.env.P2P_UPLOAD_CONCURRENCY || 4)));
 const DOWNLOAD_CONCURRENCY = Math.max(1, Math.min(16, Number(process.env.P2P_DOWNLOAD_CONCURRENCY || 6)));
-const FREE_QUOTA_BYTES = 5 * 1024 * 1024 * 1024;
+const FREE_QUOTA_BYTES = 10 * 1024 * 1024 * 1024;
+const TRIAL_DAYS = 7;
 const ENCRYPTION_ALGORITHM = 'aes-256-gcm';
 const ENCRYPTION_KEY_SOURCE = 'wallet-password-v1';
 function keySourceForIdentity() { return ENCRYPTION_KEY_SOURCE; }
@@ -259,7 +260,9 @@ function findFolderById(folderId = '') { return walletFolderManifests().find((fo
 function findFolderByName(name = '') { return walletFolderManifests().find((folder) => String(folder.name || '').toLowerCase() === String(name || '').toLowerCase()); }
 function assertFolderNotDescendant(folderId, parentFolderId) { let cursor = String(parentFolderId || ''); const seen = new Set(); while (cursor) { if (cursor === folderId) throw new Error('Cannot move folder inside itself or its child'); if (seen.has(cursor)) throw new Error('Folder tree cycle detected'); seen.add(cursor); const parent = findFolderById(cursor); cursor = parent?.parentFolderId || ''; } }
 function totalStoredBytesForWallet() { return walletFileManifests().reduce((sum, file) => sum + Number(file.size || 0), 0); }
-function walletSummary() { const plan = PLANS[walletState.planId] || PLANS.free; const usedBytes = walletState.connected ? totalStoredBytesForWallet() : 0; return { ok: true, ...walletState, encryptionSecret: null, loginSignature: null, encryptionKeySource: ENCRYPTION_KEY_SOURCE, minDrivePasswordLength: MIN_DRIVE_PASSWORD_LENGTH, address: activeWallet() || walletState.address, plan, plans: Object.values(PLANS), usedBytes, remainingBytes: Math.max(0, plan.quotaBytes - usedBytes), sync: lastSyncStatus }; }
+function visiblePlans() { return Object.values(PLANS).filter((plan) => !plan.hidden && !plan.aliasFor); }
+function canonicalPlanId(planId = 'free') { return PLANS[planId]?.aliasFor || planId; }
+function walletSummary() { const canonicalId = canonicalPlanId(walletState.planId); const plan = PLANS[canonicalId] || PLANS.free; const usedBytes = walletState.connected ? totalStoredBytesForWallet() : 0; return { ok: true, ...walletState, planId: canonicalId, encryptionSecret: null, loginSignature: null, encryptionKeySource: ENCRYPTION_KEY_SOURCE, minDrivePasswordLength: MIN_DRIVE_PASSWORD_LENGTH, address: activeWallet() || walletState.address, plan, plans: visiblePlans(), usedBytes, remainingBytes: Math.max(0, plan.quotaBytes - usedBytes), sync: lastSyncStatus }; }
 function assertWalletUploadAllowed(nextBytes = 0) { assertVerifiedWallet(); const plan = PLANS[walletState.planId] || PLANS.free; if (totalStoredBytesForWallet() + nextBytes > plan.quotaBytes) throw new Error(`Storage quota exceeded. Current plan: ${plan.name}.`); }
 function findManifest(payload = {}) { const hash = String(payload.hash || ''); const rootHash = String(payload.rootHash || ''); return walletFileManifests().find((m) => m.hash === hash || m.rootHash === rootHash); }
 
@@ -567,7 +570,162 @@ ipcMain.handle('wallet:disconnect', async () => {
   persistWallet();
   return walletSummary();
 });
-ipcMain.handle('wallet:setPlan', async (_event, payload = {}) => { assertVerifiedWallet(); const planId = String(payload.planId || 'free'); if (!PLANS[planId]) throw new Error('Unknown wallet plan'); walletState = { ...walletState, planId, paidUntil: payload.paidUntil || walletState.paidUntil || null, subscriptionTx: payload.txHash || walletState.subscriptionTx || null }; persistWallet(); return walletSummary(); });
+ipcMain.handle('wallet:setPlan', async (_event, payload = {}) => { assertVerifiedWallet(); const requestedPlanId = String(payload.planId || 'free'); const planId = canonicalPlanId(requestedPlanId); if (!PLANS[planId]) throw new Error('Unknown wallet plan'); walletState = { ...walletState, planId, paidUntil: payload.paidUntil || walletState.paidUntil || null, subscriptionTx: payload.txHash || walletState.subscriptionTx || null }; persistWallet(); return walletSummary(); });
+
+function checkoutUrlMatches(currentUrl = '', targetUrl = '') {
+  try {
+    const current = new URL(String(currentUrl || ''));
+    const target = new URL(String(targetUrl || ''));
+    return current.origin === target.origin && current.pathname.replace(/\/+$/, '') === target.pathname.replace(/\/+$/, '');
+  } catch {
+    return false;
+  }
+}
+
+function isPayPalApproveUrl(value = '') {
+  try {
+    const url = new URL(String(value || ''));
+    const host = url.hostname.toLowerCase();
+    return url.protocol === 'https:' && (host === 'paypal.com' || host.endsWith('.paypal.com'));
+  } catch {
+    return false;
+  }
+}
+
+ipcMain.handle('paypal:openCheckout', async (_event, payload = {}) => {
+  const approveUrl = String(payload.approveUrl || '').trim();
+  const returnUrl = String(payload.returnUrl || 'https://example.com/chunknet-payment-success').trim();
+  const cancelUrl = String(payload.cancelUrl || 'https://example.com/chunknet-payment-cancel').trim();
+
+  if (!isPayPalApproveUrl(approveUrl)) throw new Error('Invalid PayPal checkout URL');
+
+  const parent = mainWindow && !mainWindow.isDestroyed() ? mainWindow : BrowserWindow.getFocusedWindow();
+
+  return await new Promise((resolve, reject) => {
+    let settled = false;
+    const win = new BrowserWindow({
+      width: 560,
+      height: 760,
+      minWidth: 420,
+      minHeight: 620,
+      title: 'Chunknet PayPal Checkout',
+      parent: parent || undefined,
+      modal: Boolean(parent),
+      show: true,
+      autoHideMenuBar: true,
+      webPreferences: {
+        nodeIntegration: false,
+        contextIsolation: true,
+        sandbox: false,
+        webSecurity: true,
+        partition: 'persist:chunknet-paypal-checkout',
+      },
+    });
+
+    try {
+      win.webContents.setUserAgent(
+        'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'
+      );
+    } catch {}
+
+    const finish = (result) => {
+      if (settled) return;
+      settled = true;
+      try { if (!win.isDestroyed()) win.close(); } catch {}
+      resolve(result);
+    };
+
+    const inspect = (url) => {
+      if (checkoutUrlMatches(url, returnUrl)) {
+        finish({ ok: true, url });
+        return true;
+      }
+      if (checkoutUrlMatches(url, cancelUrl)) {
+        finish({ ok: false, cancelled: true, url });
+        return true;
+      }
+      return false;
+    };
+
+    win.webContents.setWindowOpenHandler(({ url }) => {
+      if (inspect(url)) return { action: 'deny' };
+      try {
+        const next = new URL(url);
+        const host = next.hostname.toLowerCase();
+        if (next.protocol === 'https:' && (host === 'paypal.com' || host.endsWith('.paypal.com'))) {
+          win.loadURL(url).catch(() => {});
+          return { action: 'deny' };
+        }
+      } catch {}
+      return { action: 'deny' };
+    });
+
+    win.webContents.on('will-redirect', (event, url) => { if (inspect(url)) event.preventDefault(); });
+    win.webContents.on('will-navigate', (event, url) => { if (inspect(url)) event.preventDefault(); });
+    win.webContents.on('did-navigate', (_event, url) => inspect(url));
+    win.webContents.on('did-navigate-in-page', (_event, url) => inspect(url));
+
+    win.on('closed', () => {
+      if (!settled) {
+        settled = true;
+        resolve({ ok: false, cancelled: true, closed: true });
+      }
+    });
+
+    win.webContents.on('did-fail-load', (_event, errorCode, errorDescription, validatedURL) => {
+      if (settled) return;
+      // PayPal often aborts an internal navigation while redirecting between checkout pages.
+      // This is not a failed payment, so do not reject the checkout promise.
+      if (errorCode === -3 || String(errorDescription || '').includes('ERR_ABORTED')) return;
+      console.warn('[paypal-window] did-fail-load', { errorCode, errorDescription, validatedURL });
+    });
+
+    win.loadURL(approveUrl).catch((error) => {
+      if (settled) return;
+      if (error?.code === 'ERR_ABORTED' || String(error?.message || '').includes('ERR_ABORTED')) {
+        console.warn('[paypal-window] ignored ERR_ABORTED during PayPal redirect');
+        return;
+      }
+      settled = true;
+      reject(error);
+    });
+  });
+});
+
+
+function uiPrefsPath() {
+  ensureDataDir();
+  return path.join(dataDir, 'ui-prefs.json');
+}
+
+function readUiPrefs() {
+  try {
+    const filePath = uiPrefsPath();
+    if (!fs.existsSync(filePath)) return {};
+    const parsed = JSON.parse(fs.readFileSync(filePath, 'utf8'));
+    return parsed && typeof parsed === 'object' && !Array.isArray(parsed) ? parsed : {};
+  } catch {
+    return {};
+  }
+}
+
+function writeUiPrefs(prefs = {}) {
+  const next = prefs && typeof prefs === 'object' && !Array.isArray(prefs) ? prefs : {};
+  fs.mkdirSync(path.dirname(uiPrefsPath()), { recursive: true });
+  fs.writeFileSync(uiPrefsPath(), JSON.stringify(next, null, 2), 'utf8');
+  return next;
+}
+
+ipcMain.handle('p2p:getUiPrefs', async () => ({ ok: true, prefs: readUiPrefs() }));
+ipcMain.handle('p2p:setUiPrefs', async (_event, payload = {}) => {
+  const incoming = payload?.prefs && typeof payload.prefs === 'object' && !Array.isArray(payload.prefs)
+    ? payload.prefs
+    : payload;
+  const { ok: _ok, prefs: _prefs, ...cleanIncoming } = incoming || {};
+  const prefs = writeUiPrefs({ ...readUiPrefs(), ...cleanIncoming });
+  return { ok: true, prefs };
+});
+
 ipcMain.handle('p2p:start', async (_event, options = {}) => { ensureDataDir(); loadWallet(); loadManifests(); ensureTransport(options); if (walletState.connected && walletState.verified) { await syncPull(); startAutoRepairLoop(); } return networkSummary(); });
 ipcMain.handle('p2p:listFolders', async () => {
   if (!walletState.connected || !walletState.verified) return [];
