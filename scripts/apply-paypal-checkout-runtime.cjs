@@ -104,11 +104,56 @@ const ENCRYPTION_ALGORITHM = 'aes-256-gcm';`;
   return source;
 }
 
+function patchMainUiPrefs(source) {
+  if (source.includes("ipcMain.handle('p2p:setUiPrefs'")) return source;
+  if (!source.includes("ipcMain.handle('p2p:start'")) {
+    throw new Error('Could not find p2p:start IPC handler anchor in electron/main.js');
+  }
+
+  const handler = `
+function uiPrefsPath() {
+  ensureDataDir();
+  return path.join(dataDir, 'ui-prefs.json');
+}
+
+function readUiPrefs() {
+  try {
+    const filePath = uiPrefsPath();
+    if (!fs.existsSync(filePath)) return {};
+    const parsed = JSON.parse(fs.readFileSync(filePath, 'utf8'));
+    return parsed && typeof parsed === 'object' && !Array.isArray(parsed) ? parsed : {};
+  } catch {
+    return {};
+  }
+}
+
+function writeUiPrefs(prefs = {}) {
+  const next = prefs && typeof prefs === 'object' && !Array.isArray(prefs) ? prefs : {};
+  fs.mkdirSync(path.dirname(uiPrefsPath()), { recursive: true });
+  fs.writeFileSync(uiPrefsPath(), JSON.stringify(next, null, 2), 'utf8');
+  return next;
+}
+
+ipcMain.handle('p2p:getUiPrefs', async () => ({ ok: true, prefs: readUiPrefs() }));
+ipcMain.handle('p2p:setUiPrefs', async (_event, payload = {}) => {
+  const incoming = payload?.prefs && typeof payload.prefs === 'object' && !Array.isArray(payload.prefs)
+    ? payload.prefs
+    : payload;
+  const { ok: _ok, prefs: _prefs, ...cleanIncoming } = incoming || {};
+  const prefs = writeUiPrefs({ ...readUiPrefs(), ...cleanIncoming });
+  return { ok: true, prefs };
+});
+`;
+
+  return source.replace("ipcMain.handle('p2p:start'", `${handler}\nipcMain.handle('p2p:start'`);
+}
+
 function patchMain() {
   let source = read(mainPath);
   const before = source;
 
   source = patchMainPlans(source);
+  source = patchMainUiPrefs(source);
 
   if (!source.includes("ipcMain.handle('paypal:openCheckout'")) {
     const handler = `
