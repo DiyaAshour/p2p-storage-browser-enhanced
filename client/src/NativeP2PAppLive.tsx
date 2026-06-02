@@ -58,8 +58,9 @@ type Channel =
   | "p2p:prepareProof"
   | "wallet:status"
   | "wallet:connect"
-  | "wallet:disconnect"
+  | "wallet:disconnect"  | "paypal:createSubscription"
   | "paypal:openCheckout"
+  | "paypal:confirmSubscription"
   | "seed:create"
   | "seed:login"
   | "seed:recover"
@@ -238,9 +239,6 @@ const WALLETCONNECT_PROJECT_ID =
   (import.meta as any).env?.VITE_WALLETCONNECT_PROJECT_ID ||
   "821b9d64c996dc59c7d18583fc7081f0";
 
-const PAYPAL_CHECKOUT_URL =
-  ((import.meta as any).env?.VITE_PAYPAL_CHECKOUT_URL as string) ||
-  "http://54.166.171.208:8791"; // Ethereum Mainnet
 
 // ─── Helpers ──────────────────────────────────────────────────────────────────
 function getBridge(): Bridge | null {
@@ -1342,51 +1340,37 @@ const buyPlan = (plan: Plan) =>
     setPayingPlanId(plan.id);
 
     try {
-      const createRes = await fetch(`${PAYPAL_CHECKOUT_URL}/paypal/create-subscription`, {
-        method: "POST",
-        headers: { "content-type": "application/json" },
-        body: JSON.stringify({
-          planId: plan.id,
-          wallet: identity,
-          accountId: identity,
-          identity,
-          username: wallet?.username || "",
-        }),
+      const created = await api.invoke<any>("paypal:createSubscription", {
+        planId: plan.id,
+        wallet: identity,
+        accountId: identity,
+        identity,
+        username: wallet?.username || "",
       });
 
-      const created = await createRes.json().catch(() => ({}));
-
-      if (!createRes.ok || !created?.approveUrl) {
+      if (!created?.approveUrl) {
         throw new Error(created?.error || "Could not create PayPal subscription");
       }
 
       const checkout = await api.invoke<{ ok: boolean; cancelled?: boolean }>("paypal:openCheckout", {
         approveUrl: created.approveUrl,
-        returnUrl: "https://example.com/chunknet-payment-success",
-        cancelUrl: "https://example.com/chunknet-payment-cancel",
       });
 
       if (!checkout?.ok) {
         throw new Error(checkout?.cancelled ? "PayPal subscription cancelled" : "PayPal subscription was not completed");
       }
 
-      const confirmRes = await fetch(`${PAYPAL_CHECKOUT_URL}/paypal/confirm-subscription`, {
-        method: "POST",
-        headers: { "content-type": "application/json" },
-        body: JSON.stringify({
-          subscriptionId: created.subscriptionId || created.orderId || created.id,
-          orderId: created.orderId || created.subscriptionId || created.id,
-          planId: plan.id,
-          wallet: identity,
-          accountId: identity,
-          identity,
-          username: wallet?.username || "",
-        }),
+      const confirmed = await api.invoke<any>("paypal:confirmSubscription", {
+        subscriptionId: created.subscriptionId || created.orderId || created.id,
+        orderId: created.orderId || created.subscriptionId || created.id,
+        planId: plan.id,
+        wallet: identity,
+        accountId: identity,
+        identity,
+        username: wallet?.username || "",
       });
 
-      const confirmed = await confirmRes.json().catch(() => ({}));
-
-      if (!confirmRes.ok || !confirmed?.ok) {
+      if (!confirmed?.ok) {
         throw new Error(confirmed?.error || "Subscription was not activated");
       }
 
@@ -1402,7 +1386,7 @@ const buyPlan = (plan: Plan) =>
       setPlanPickerOpen(false);
       await refresh();
 
-      toast.success(`${confirmed.plan?.name || plan.name} plan activated`);
+      toast.success((confirmed.plan?.name || plan.name) + " plan activated");
     } finally {
       setPayingPlanId("");
     }

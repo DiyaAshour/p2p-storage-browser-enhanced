@@ -281,6 +281,8 @@ async function importMainWhenReady() {
     console.log('[main-wrapper] p2p delete message override import finished');
     await import('./wallet-plan-guard.js');
     console.log('[main-wrapper] wallet plan guard import finished');
+    await import('./paypal-subscription-ipc.js');
+    console.log('[main-wrapper] paypal subscription IPC import finished');
     await importPrimaryRuntime();
     await import('./list-files-normalize-ipc.js');
     console.log('[main-wrapper] list files normalization import finished');
