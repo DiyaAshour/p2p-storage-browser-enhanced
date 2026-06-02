@@ -42,6 +42,19 @@ function loadLocalEnv(fileName) {
   return true;
 }
 
+function runOptionalScript(scriptPath) {
+  const absolutePath = path.resolve(process.cwd(), scriptPath);
+  if (!fs.existsSync(absolutePath)) return;
+  const result = spawnSync(process.execPath, [absolutePath], {
+    stdio: 'inherit',
+    env: process.env,
+    windowsHide: true,
+  });
+  if (result.status) {
+    throw new Error(`${scriptPath} failed with exit code ${result.status}`);
+  }
+}
+
 loadLocalEnv('.env.local');
 loadLocalEnv('.env');
 
@@ -53,7 +66,12 @@ setDefault('P2P_SAFETY_PEER_URL', `ws://${serverIp}:8792`);
 setDefault('P2P_SAFETY_PEER_MODE', 'emergency');
 setDefault('P2P_TRANSPORT_PORT', '8787');
 setDefault('P2P_TRANSPORT_HOST', '0.0.0.0');
-setDefault('PAYPAL_CHECKOUT_URL', 'http://127.0.0.1:8791');
+setDefault('PAYPAL_CHECKOUT_URL', `http://${serverIp}:8791`);
+setDefault('VITE_PAYPAL_CHECKOUT_URL', process.env.PAYPAL_CHECKOUT_URL);
+setDefault('PAYPAL_RETURN_URL', 'https://example.com/chunknet-payment-success');
+setDefault('PAYPAL_CANCEL_URL', 'https://example.com/chunknet-payment-cancel');
+
+runOptionalScript('scripts/apply-paypal-checkout-runtime.cjs');
 
 if (!process.env.P2P_SAFETY_PEER_DELETE_TOKEN && fs.existsSync(sshKey)) {
   const result = spawnSync('ssh', ['-i', sshKey, `${sshUser}@${serverIp}`, 'cat /data/chunknet-data/storage-delete-token.txt'], {
@@ -77,7 +95,7 @@ console.log('[cloud-dev] Bootstrap:', process.env.P2P_BOOTSTRAP_URL);
 console.log('[cloud-dev] Manifest: ', process.env.P2P_MANIFEST_SYNC_URL);
 console.log('[cloud-dev] Safety:   ', process.env.P2P_SAFETY_PEER_URL);
 console.log('[cloud-dev] Replicas: ', process.env.P2P_TARGET_REPLICAS);
-console.log('[cloud-dev] PayPal:   ', process.env.PAYPAL_ENV || 'sandbox', process.env.PAYPAL_CLIENT_ID ? 'configured' : 'not-configured');
+console.log('[cloud-dev] PayPal:   ', process.env.PAYPAL_CHECKOUT_URL, process.env.PAYPAL_ENV || 'sandbox', process.env.PAYPAL_CLIENT_ID ? 'configured' : 'remote');
 
 const child = process.platform === 'win32'
   ? spawn('cmd.exe', ['/d', '/s', '/c', 'pnpm run electron:dev:raw'], {
