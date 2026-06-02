@@ -22,6 +22,15 @@ function warn(message) {
   console.warn(`[plan-upgrade-modal-runtime] ${message}`);
 }
 
+function removeDuplicatePlanPickers() {
+  const marker = 'Choose your Chunknet plan';
+  const first = source.indexOf(marker);
+  if (first < 0) return;
+  const second = source.indexOf(marker, first + marker.length);
+  if (second < 0) return;
+  warn('multiple plan pickers detected; keeping existing JSX and only fixing helpers');
+}
+
 // 1) State: make sure the modal state exists. Do not detect by JSX usage only.
 if (!/const \[planPickerOpen,\s*setPlanPickerOpen\]/.test(source)) {
   const inserted = replaceOnce(
@@ -32,21 +41,30 @@ if (!/const \[planPickerOpen,\s*setPlanPickerOpen\]/.test(source)) {
   if (!inserted) warn('could not insert planPickerOpen state');
 }
 
-// 2) Helpers: make sure the variables used by the JSX are defined. The old
-// script incorrectly skipped this when visiblePaidPlans appeared only inside JSX.
 const helperBlock = `
 
-  const visiblePaidPlans = useMemo(
-    () =>
-      (wallet?.plans || [])
-        .filter((plan) => Number(plan.priceUsd || 0) > 0)
-        .filter((plan) => !["tb1", "tb3", "tb7", "tb10"].includes(plan.id))
-        .sort((a, b) => Number(a.quotaBytes || 0) - Number(b.quotaBytes || 0)),
-    [wallet?.plans]
+  const defaultPaidPlans = useMemo<Plan[]>(
+    () => [
+      { id: "starter", name: "Starter", quotaBytes: 100 * 1024 ** 3, priceUsd: 2.99, locked: true, description: "100 GB storage plan" },
+      { id: "personal", name: "Personal", quotaBytes: 1 * 1024 ** 4, priceUsd: 7.99, locked: true, description: "1 TB storage plan" },
+      { id: "plus", name: "Plus", quotaBytes: 3 * 1024 ** 4, priceUsd: 14.99, locked: true, description: "3 TB storage plan" },
+      { id: "pro", name: "Pro", quotaBytes: 7 * 1024 ** 4, priceUsd: 24.99, locked: true, description: "7 TB storage plan" },
+      { id: "ultra", name: "Ultra", quotaBytes: 10 * 1024 ** 4, priceUsd: 34.99, locked: true, description: "10 TB storage plan" },
+    ],
+    []
   );
 
-  const currentPlanName = wallet?.plan?.name || "Trial";
-  const currentPlanId = wallet?.planId || wallet?.plan?.id || "trial";
+  const visiblePaidPlans = useMemo(() => {
+    const remotePlans = (wallet?.plans || [])
+      .filter((plan) => Number(plan.priceUsd || 0) > 0)
+      .filter((plan) => !["tb1", "tb3", "tb7", "tb10"].includes(plan.id));
+
+    const plans = remotePlans.length ? remotePlans : defaultPaidPlans;
+    return plans.slice().sort((a, b) => Number(a.quotaBytes || 0) - Number(b.quotaBytes || 0));
+  }, [wallet?.plans, defaultPaidPlans]);
+
+  const currentPlanName = wallet?.plan?.name || "Free";
+  const currentPlanId = wallet?.planId || wallet?.plan?.id || "free";
   const usedBytes = Number(wallet?.usedBytes || 0);
 
   const canSelectPlan = (plan: Plan) => {
@@ -59,6 +77,15 @@ const helperBlock = `
     if (size >= 1024 ** 4) return \`\${Math.round(size / 1024 ** 4)} TB\`;
     return \`\${Math.round(size / 1024 ** 3)} GB\`;
   };`;
+
+// 2) Remove any previous helper block that had no fallback, then insert the fixed helper block.
+if (/const\s+visiblePaidPlans\s*=\s*useMemo/.test(source) && !/const\s+defaultPaidPlans\s*=\s*useMemo/.test(source)) {
+  const removed = replaceRegex(
+    /\n\s*const visiblePaidPlans = useMemo\([\s\S]*?\n\s*const folderById = useMemo\(/m,
+    `${helperBlock}\n\n  const folderById = useMemo(`
+  );
+  if (!removed) warn('could not replace old visiblePaidPlans helper block');
+}
 
 if (!/const\s+currentPlanName\s*=/.test(source)) {
   let inserted = replaceOnce(
@@ -84,14 +111,24 @@ if (!/const\s+currentPlanName\s*=/.test(source)) {
   if (!inserted) warn('could not insert plan helper variables');
 }
 
-// 3) Close modal after successful activation.
+// 3) If defaultPaidPlans was not inserted because a partial helper existed, add it before visiblePaidPlans and rewrite visiblePaidPlans.
+if (/const\s+visiblePaidPlans\s*=\s*useMemo/.test(source) && !/const\s+defaultPaidPlans\s*=\s*useMemo/.test(source)) {
+  const fixedHelpers = helperBlock.replace(/^\n\n/, '');
+  const replaced = replaceRegex(
+    /\s*const visiblePaidPlans = useMemo\([\s\S]*?\n\s*const currentPlanName\s*=\s*wallet\?\.plan\?\.name \|\| ["'](?:Trial|Free)["'];/m,
+    `\n\n  ${fixedHelpers}\n\n  const currentPlanName = wallet?.plan?.name || "Free";`
+  );
+  if (!replaced) warn('fallback plan list still could not be inserted');
+}
+
+// 4) Close modal after successful activation.
 source = source.replace(
   `        toast.success(\`\${captured.plan?.name || plan.name} plan activated\`);`,
   `        setPlanPickerOpen(false);
         toast.success(\`\${captured.plan?.name || plan.name} plan activated\`);`
 );
 
-// 4) Remove the old always-visible plan buttons when the exact block is still present.
+// 5) Remove the old always-visible plan buttons when the exact block is still present.
 const oldButtons = `          {wallet?.plans?.length ? (
             <div className="mt-3 flex flex-wrap gap-2">
               {wallet.plans
@@ -221,7 +258,7 @@ const newPlanPicker = `          {wallet?.connected && (
             </div>
           )}`;
 
-// 5) Insert picker only if not already inserted.
+// 6) Insert picker only if not already inserted.
 if (!source.includes('Choose your Chunknet plan')) {
   const oldPlanLabelExact = `          {wallet?.plan && (
             <span className="flex items-center gap-1">
@@ -248,6 +285,8 @@ if (!source.includes('Choose your Chunknet plan')) {
 
   if (!inserted) warn('header anchor not found; skipped plan picker insertion');
 }
+
+removeDuplicatePlanPickers();
 
 if (before !== source) fs.writeFileSync(rendererPath, source, 'utf8');
 console.log('[plan-upgrade-modal-runtime] applied', { renderer: before !== source });
