@@ -39,6 +39,18 @@ function normalizeChunkHash(chunkHash = '') {
   return hash;
 }
 
+function safetyLog(action, details = {}, level = 'log') {
+  const payload = {
+    at: new Date().toISOString(),
+    replicaId: SAFETY_PEER_REPLICA_ID,
+    peerUrl: safetyPeerUrl(),
+    mode: SAFETY_PEER_MODE,
+    ...details,
+  };
+  const fn = level === 'warn' ? console.warn : level === 'error' ? console.error : console.log;
+  fn(`[safety-peer] ${action}`, payload);
+}
+
 function waitForOpen(socket, timeoutMs = SAFETY_PEER_TIMEOUT_MS) {
   return new Promise((resolve, reject) => {
     const timer = setTimeout(() => reject(new Error('Safety peer connection timed out')), timeoutMs);
@@ -90,71 +102,126 @@ async function withSafetySocket(work) {
 }
 
 export async function putChunkToSafetyPeer(chunk, fromPeerId = 'desktop-client') {
-  if (!shouldUseSafetyPeer(chunk)) return { ok: false, skipped: true, reason: `safety-peer-${SAFETY_PEER_MODE}-not-required` };
+  if (!shouldUseSafetyPeer(chunk)) {
+    const skipped = { ok: false, skipped: true, reason: `safety-peer-${SAFETY_PEER_MODE}-not-required` };
+    safetyLog('put skipped', { chunkHash: chunk?.hash || '', fromPeerId, reason: skipped.reason }, 'warn');
+    return skipped;
+  }
   if (!chunk?.hash || !chunk?.data) throw new Error('Invalid chunk for safety peer put');
-  return withSafetySocket(async (socket) => {
-    socket.send(JSON.stringify({ type: 'peer:hello', fromPeerId }));
-    socket.send(JSON.stringify({
-      id: `put-${chunk.hash}-${Date.now()}`,
-      type: 'chunk:put',
-      fromPeerId,
-      createdAt: Date.now(),
-      payload: { chunk: { ...chunk, hash: normalizeChunkHash(chunk.hash) } },
-    }));
-    const message = await waitForMessage(socket, (msg) => {
-      if (msg.type === 'chunk:error') return true;
-      return msg.type === 'chunk:stored-ack' && msg.payload?.chunkHash === chunk.hash;
-    });
-    if (message.type === 'chunk:error') throw new Error(message.error || 'Safety peer rejected chunk');
-    return { ok: true, peerUrl: safetyPeerUrl(), chunkHash: chunk.hash, replicaId: SAFETY_PEER_REPLICA_ID };
+
+  const hash = normalizeChunkHash(chunk.hash);
+  safetyLog('put start', {
+    chunkHash: hash,
+    fromPeerId,
+    bytesBase64: String(chunk.data || '').length,
+    reason: chunk.safetyReason || chunk.reason || (chunk.emergencySafety ? 'emergency' : 'requested'),
   });
+
+  try {
+    const result = await withSafetySocket(async (socket) => {
+      socket.send(JSON.stringify({ type: 'peer:hello', fromPeerId }));
+      socket.send(JSON.stringify({
+        id: `put-${hash}-${Date.now()}`,
+        type: 'chunk:put',
+        fromPeerId,
+        createdAt: Date.now(),
+        payload: { chunk: { ...chunk, hash } },
+      }));
+      const message = await waitForMessage(socket, (msg) => {
+        if (msg.type === 'chunk:error') return true;
+        return msg.type === 'chunk:stored-ack' && msg.payload?.chunkHash === hash;
+      });
+      if (message.type === 'chunk:error') throw new Error(message.error || 'Safety peer rejected chunk');
+      return { ok: true, peerUrl: safetyPeerUrl(), chunkHash: hash, replicaId: SAFETY_PEER_REPLICA_ID };
+    });
+
+    if (result?.ok) safetyLog('put stored', { chunkHash: hash, fromPeerId });
+    else safetyLog('put finished without store', { chunkHash: hash, fromPeerId, result }, 'warn');
+    return result;
+  } catch (error) {
+    safetyLog('put failed', { chunkHash: hash, fromPeerId, error: error?.message || String(error) }, 'error');
+    throw error;
+  }
 }
 
 export async function getChunkFromSafetyPeer(chunkHash, fromPeerId = 'desktop-client') {
   if (!isSafetyPeerEnabled()) throw new Error('Safety peer is not configured');
   const hash = normalizeChunkHash(chunkHash);
-  return withSafetySocket(async (socket) => {
-    socket.send(JSON.stringify({ type: 'peer:hello', fromPeerId }));
-    socket.send(JSON.stringify({
-      id: `get-${hash}-${Date.now()}`,
-      type: 'chunk:get',
-      fromPeerId,
-      createdAt: Date.now(),
-      payload: { chunkHash: hash },
-    }));
-    const message = await waitForMessage(socket, (msg) => ['chunk:found', 'chunk:not-found', 'chunk:error'].includes(msg.type));
-    if (message.type === 'chunk:error') throw new Error(message.error || 'Safety peer failed to read chunk');
-    if (message.type === 'chunk:not-found') throw new Error(`Safety peer missing chunk: ${hash}`);
-    const chunk = message.payload?.chunk;
-    if (!chunk?.data || chunk.hash !== hash) throw new Error('Safety peer returned invalid chunk');
+  safetyLog('get start', { chunkHash: hash, fromPeerId });
+
+  try {
+    const chunk = await withSafetySocket(async (socket) => {
+      socket.send(JSON.stringify({ type: 'peer:hello', fromPeerId }));
+      socket.send(JSON.stringify({
+        id: `get-${hash}-${Date.now()}`,
+        type: 'chunk:get',
+        fromPeerId,
+        createdAt: Date.now(),
+        payload: { chunkHash: hash },
+      }));
+      const message = await waitForMessage(socket, (msg) => ['chunk:found', 'chunk:not-found', 'chunk:error'].includes(msg.type));
+      if (message.type === 'chunk:error') throw new Error(message.error || 'Safety peer failed to read chunk');
+      if (message.type === 'chunk:not-found') throw new Error(`Safety peer missing chunk: ${hash}`);
+      const found = message.payload?.chunk;
+      if (!found?.data || found.hash !== hash) throw new Error('Safety peer returned invalid chunk');
+      return found;
+    });
+    safetyLog('get found', { chunkHash: hash, fromPeerId });
     return chunk;
-  });
+  } catch (error) {
+    safetyLog('get failed', { chunkHash: hash, fromPeerId, error: error?.message || String(error) }, 'error');
+    throw error;
+  }
 }
 
 export async function deleteChunkFromSafetyPeer(chunkHash, fromPeerId = 'desktop-client') {
-  if (!isSafetyPeerEnabled()) return { ok: false, skipped: true, reason: 'safety-peer-disabled' };
+  if (!isSafetyPeerEnabled()) {
+    const skipped = { ok: false, skipped: true, reason: 'safety-peer-disabled' };
+    safetyLog('delete skipped', { chunkHash: chunkHash || '', fromPeerId, reason: skipped.reason }, 'warn');
+    return skipped;
+  }
   const hash = normalizeChunkHash(chunkHash);
   const adminToken = safetyPeerDeleteToken();
   if (!adminToken) {
-    throw new Error('Safety peer delete token is not configured. Set P2P_SAFETY_PEER_DELETE_TOKEN before starting Electron.');
+    const error = 'Safety peer delete token is not configured. Set P2P_SAFETY_PEER_DELETE_TOKEN before starting Electron.';
+    safetyLog('delete blocked', { chunkHash: hash, fromPeerId, error }, 'error');
+    throw new Error(error);
   }
-  return withSafetySocket(async (socket) => {
-    socket.send(JSON.stringify({ type: 'peer:hello', fromPeerId }));
-    socket.send(JSON.stringify({
-      id: `delete-${hash}-${Date.now()}`,
-      type: 'chunk:delete',
+
+  safetyLog('delete start', { chunkHash: hash, fromPeerId });
+
+  try {
+    const result = await withSafetySocket(async (socket) => {
+      socket.send(JSON.stringify({ type: 'peer:hello', fromPeerId }));
+      socket.send(JSON.stringify({
+        id: `delete-${hash}-${Date.now()}`,
+        type: 'chunk:delete',
+        fromPeerId,
+        createdAt: Date.now(),
+        payload: {
+          chunkHash: hash,
+          adminToken,
+        },
+      }));
+      const message = await waitForMessage(socket, (msg) => ['chunk:deleted', 'chunk:not-found', 'chunk:error'].includes(msg.type));
+      if (message.type === 'chunk:error') {
+        throw new Error(message.error || 'Safety peer failed to delete chunk');
+      }
+      if (message.type === 'chunk:not-found') {
+        return { ok: true, alreadyMissing: true, peerUrl: safetyPeerUrl(), chunkHash: hash, replicaId: SAFETY_PEER_REPLICA_ID };
+      }
+      return { ok: true, deleted: true, peerUrl: safetyPeerUrl(), chunkHash: hash, replicaId: SAFETY_PEER_REPLICA_ID };
+    });
+
+    safetyLog(result?.alreadyMissing ? 'delete already-missing' : 'delete confirmed', {
+      chunkHash: hash,
       fromPeerId,
-      createdAt: Date.now(),
-      payload: {
-        chunkHash: hash,
-        adminToken,
-      },
-    }));
-    const message = await waitForMessage(socket, (msg) => ['chunk:deleted', 'chunk:not-found', 'chunk:error'].includes(msg.type));
-    if (message.type === 'chunk:error') {
-      throw new Error(message.error || 'Safety peer failed to delete chunk');
-    }
-    if (message.type === 'chunk:not-found') return { ok: true, alreadyMissing: true, peerUrl: safetyPeerUrl(), chunkHash: hash, replicaId: SAFETY_PEER_REPLICA_ID };
-    return { ok: true, peerUrl: safetyPeerUrl(), chunkHash: hash, replicaId: SAFETY_PEER_REPLICA_ID };
-  });
+      alreadyMissing: Boolean(result?.alreadyMissing),
+      deleted: Boolean(result?.deleted || (result?.ok && !result?.alreadyMissing)),
+    });
+    return result;
+  } catch (error) {
+    safetyLog('delete failed', { chunkHash: hash, fromPeerId, error: error?.message || String(error) }, 'error');
+    throw error;
+  }
 }
