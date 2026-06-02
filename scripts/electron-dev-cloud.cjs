@@ -72,6 +72,7 @@ setDefault('PAYPAL_RETURN_URL', 'https://example.com/chunknet-payment-success');
 setDefault('PAYPAL_CANCEL_URL', 'https://example.com/chunknet-payment-cancel');
 
 runOptionalScript('scripts/apply-paypal-checkout-runtime.cjs');
+runOptionalScript('scripts/apply-paypal-subscriptions-runtime.cjs');
 
 if (!process.env.P2P_SAFETY_PEER_DELETE_TOKEN && fs.existsSync(sshKey)) {
   const result = spawnSync('ssh', ['-i', sshKey, `${sshUser}@${serverIp}`, 'cat /data/chunknet-data/storage-delete-token.txt'], {
