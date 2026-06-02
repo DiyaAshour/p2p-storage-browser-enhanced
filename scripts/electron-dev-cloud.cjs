@@ -42,11 +42,22 @@ console.log('[cloud-dev] Manifest: ', process.env.P2P_MANIFEST_SYNC_URL);
 console.log('[cloud-dev] Safety:   ', process.env.P2P_SAFETY_PEER_URL);
 console.log('[cloud-dev] Replicas: ', process.env.P2P_TARGET_REPLICAS);
 
-const command = process.platform === 'win32' ? 'pnpm.cmd' : 'pnpm';
-const child = spawn(command, ['run', 'electron:dev:raw'], {
-  stdio: 'inherit',
-  env: process.env,
-  shell: false,
+const child = process.platform === 'win32'
+  ? spawn('cmd.exe', ['/d', '/s', '/c', 'pnpm run electron:dev:raw'], {
+      stdio: 'inherit',
+      env: process.env,
+      shell: false,
+      windowsHide: false,
+    })
+  : spawn('pnpm', ['run', 'electron:dev:raw'], {
+      stdio: 'inherit',
+      env: process.env,
+      shell: false,
+    });
+
+child.on('error', (error) => {
+  console.error('[cloud-dev] Failed to start electron:dev:raw:', error.message || error);
+  process.exit(1);
 });
 
 child.on('exit', (code, signal) => {
