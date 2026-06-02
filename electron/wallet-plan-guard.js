@@ -19,8 +19,13 @@ function paypalCheckoutUrl() {
   ).replace(/\r/g, '').trim().replace(/\/+$/, '');
 }
 
-function normalizeWallet(address = '') {
-  return String(address || '').trim().toLowerCase();
+function normalizeIdentity(identity = '') {
+  return String(identity || '').trim().toLowerCase();
+}
+
+function isValidPaidIdentity(identity = '') {
+  const value = normalizeIdentity(identity);
+  return /^0x[a-f0-9]{40}$/.test(value) || /^seed:[a-z0-9][a-z0-9:_@.\-]{2,191}$/i.test(value);
 }
 
 function timingSafeEqualText(a = '', b = '') {
@@ -32,7 +37,7 @@ function timingSafeEqualText(a = '', b = '') {
 function planUnlockPayload({ wallet, planId, paidUntil, orderId }) {
   return JSON.stringify({
     version: PLAN_UNLOCK_VERSION,
-    wallet: normalizeWallet(wallet),
+    wallet: normalizeIdentity(wallet),
     planId: String(planId || '').trim(),
     paidUntil: Number(paidUntil || 0),
     orderId: String(orderId || '').trim(),
@@ -44,20 +49,32 @@ function signPlanUnlock(payload, secret = planUnlockSecret()) {
   return crypto.createHmac('sha256', secret).update(planUnlockPayload(payload)).digest('hex');
 }
 
+function paidIdentityFromPayload(payload = {}) {
+  return normalizeIdentity(
+    payload.wallet ||
+      payload.accountId ||
+      payload.identity ||
+      payload.walletAddress ||
+      payload.address ||
+      payload.seedAccount ||
+      payload.username
+  );
+}
+
 function basicValidatePaidPayload(payload = {}) {
   const planId = String(payload.planId || 'free').trim();
-  if (planId === 'free') return null;
+  if (planId === 'free' || planId === 'trial') return null;
 
-  const wallet = normalizeWallet(payload.wallet || payload.walletAddress || payload.address);
-  if (!/^0x[a-f0-9]{40}$/.test(wallet)) throw new Error('Paid plan unlock requires the paid wallet address');
+  const wallet = paidIdentityFromPayload(payload);
+  if (!isValidPaidIdentity(wallet)) throw new Error('Paid plan unlock requires the paid wallet or seed account identity');
 
   const paidUntil = Number(payload.paidUntil || 0);
   if (!Number.isFinite(paidUntil) || paidUntil <= Math.floor(Date.now() / 1000)) {
     throw new Error('Paid plan unlock requires a future paidUntil timestamp');
   }
 
-  const orderId = String(payload.orderId || payload.paypalOrderId || payload.captureId || payload.txHash || '').trim();
-  if (!orderId) throw new Error('Paid plan unlock requires a PayPal order id, capture id, or contract tx hash');
+  const orderId = String(payload.orderId || payload.paypalOrderId || payload.subscriptionId || payload.captureId || payload.txHash || '').trim();
+  if (!orderId) throw new Error('Paid plan unlock requires a PayPal order/subscription id, capture id, or contract tx hash');
 
   const token = String(payload.planUnlockToken || payload.unlockToken || '').trim().toLowerCase();
   if (!/^[a-f0-9]{64}$/.test(token)) throw new Error('Paid plan unlock token is missing or invalid');
