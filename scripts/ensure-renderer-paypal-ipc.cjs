@@ -4,9 +4,11 @@ const path = require('node:path');
 const root = process.cwd();
 const rendererFile = path.join(root, 'client', 'src', 'NativeP2PAppLive.tsx');
 const mainWrapperFile = path.join(root, 'electron', 'main-wrapper.js');
+const mainFile = path.join(root, 'electron', 'main.js');
 
 if (!fs.existsSync(rendererFile)) throw new Error(`Missing ${rendererFile}`);
 if (!fs.existsSync(mainWrapperFile)) throw new Error(`Missing ${mainWrapperFile}`);
+if (!fs.existsSync(mainFile)) throw new Error(`Missing ${mainFile}`);
 
 let src = fs.readFileSync(rendererFile, 'utf8').replace(/\r\n/g, '\n');
 let changed = false;
@@ -146,9 +148,21 @@ function replaceBuyPlan() {
   mark('moved buyPlan PayPal requests to Electron IPC');
 }
 
-function ensureMainWrapperImport() {
+function ensureStaticPayPalImport(filePath) {
+  let main = fs.readFileSync(filePath, 'utf8').replace(/\r\n/g, '\n');
+  const rel = path.relative(root, filePath);
+  const staticImport = "import './paypal-subscription-ipc.js';";
+  if (main.includes(staticImport)) return;
+  const firstImport = main.match(/^import .*?;$/m)?.[0];
+  if (!firstImport) throw new Error(`Could not find first import in ${rel}`);
+  main = main.replace(firstImport, `${staticImport}\n${firstImport}`);
+  fs.writeFileSync(filePath, main, 'utf8');
+  console.log(`[ensure-renderer-paypal-ipc] installed static PayPal IPC import in ${rel}`);
+}
+
+function ensureMainWrapperDynamicImport() {
   let main = fs.readFileSync(mainWrapperFile, 'utf8').replace(/\r\n/g, '\n');
-  if (main.includes("./paypal-subscription-ipc.js")) return;
+  if (main.includes("await import('./paypal-subscription-ipc.js');")) return;
 
   const marker = "    await import('./wallet-plan-guard.js');\n    console.log('[main-wrapper] wallet plan guard import finished');\n";
   const replacement = marker + "    await import('./paypal-subscription-ipc.js');\n    console.log('[main-wrapper] paypal subscription IPC import finished');\n";
@@ -156,7 +170,7 @@ function ensureMainWrapperImport() {
 
   main = main.replace(marker, replacement);
   fs.writeFileSync(mainWrapperFile, main, 'utf8');
-  console.log('[ensure-renderer-paypal-ipc] installed paypal subscription IPC import in main-wrapper.js');
+  console.log('[ensure-renderer-paypal-ipc] installed paypal subscription IPC dynamic import in main-wrapper.js');
 }
 
 ensurePayPalChannelTypes();
@@ -172,6 +186,8 @@ if (!src.includes('"paypal:createSubscription"') || !src.includes('"paypal:confi
 }
 
 if (changed) fs.writeFileSync(rendererFile, src, 'utf8');
-ensureMainWrapperImport();
+ensureStaticPayPalImport(mainFile);
+ensureStaticPayPalImport(mainWrapperFile);
+ensureMainWrapperDynamicImport();
 
 console.log('[ensure-renderer-paypal-ipc] ok');
