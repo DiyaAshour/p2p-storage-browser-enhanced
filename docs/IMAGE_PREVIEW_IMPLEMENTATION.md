@@ -1,17 +1,17 @@
-# Chunknet Image Preview Implementation
+# Chunknet Image Preview + Thumbnail Implementation
 
 Date: 2026-06-03
 Branch: `big-file-upload-safe`
 
 ## Goal
 
-Add image preview support to Chunknet without breaking the big-file-safe upload/download path.
+Add image preview and safe thumbnail support to Chunknet without breaking the big-file-safe upload/download path.
 
 Requested behavior:
 
-- Image files show a preview action in `NativeP2PAppLive.tsx`.
+- Image files show a small thumbnail inside the file card.
 - Double-clicking the image card opens a preview modal.
-- Preview does not use renderer memory-heavy file transfer APIs.
+- Preview and thumbnails do not use renderer memory-heavy file transfer APIs.
 - Normal downloads continue to use `p2p:downloadToPath`.
 - Big file safety rules remain protected.
 
@@ -32,7 +32,7 @@ Reason: `scripts/verify-large-file-safety.cjs` explicitly blocks these patterns 
 
 ### `electron/image-preview-ipc.js`
 
-New disk-first image preview backend.
+Disk-first image preview and thumbnail backend.
 
 What it does:
 
@@ -40,20 +40,26 @@ What it does:
 2. Validates that the file is an image by MIME type or file extension.
 3. Reads chunks from the local binary chunk store, network, or safety peer.
 4. Writes encrypted/cipher chunks to a temporary file without returning bytes to React.
-5. Decrypts encrypted files to a temporary preview file using stream pipeline.
+5. Decrypts encrypted files to a temporary image file using stream pipeline.
 6. Registers a privileged Electron protocol:
 
    ```text
-   chunknet-preview://<tempId>/<safe-name>
+   chunknet-preview://<id>/<safe-name>
    ```
 
-7. Returns only the preview URL and temp ID to the renderer.
-8. Deletes temp preview files when `p2p:clearPreviewTemp` runs or when the app quits.
+7. Returns only safe protocol URLs to the renderer.
+8. Deletes temporary preview files when `p2p:clearPreviewTemp` runs or when the app quits.
+9. Generates cached PNG thumbnails using Electron `nativeImage` and stores them under:
+
+   ```text
+   userData/native-p2p-storage/thumbnails
+   ```
 
 New IPC handlers:
 
 ```text
 p2p:previewImageToTemp
+p2p:getImageThumbnail
 p2p:clearPreviewTemp
 ```
 
@@ -65,10 +71,11 @@ Added allowed channels:
 
 ```text
 p2p:previewImageToTemp
+p2p:getImageThumbnail
 p2p:clearPreviewTemp
 ```
 
-This prevents the preload bridge from blocking the new preview IPC calls.
+This prevents the preload bridge from blocking the new preview/thumbnail IPC calls.
 
 ### `electron/main-wrapper.js`
 
@@ -88,7 +95,7 @@ Added:
 runOptionalScript('scripts/ensure-image-preview-ipc.cjs');
 ```
 
-This makes `pnpm run electron:dev` self-healing and applies preview wiring before Electron launches.
+This makes `pnpm run electron:dev` self-healing and applies preview/thumbnail wiring before Electron launches.
 
 ### `package.json`
 
@@ -132,6 +139,7 @@ Planned/ensured changes:
 
    ```ts
    | "p2p:previewImageToTemp"
+   | "p2p:getImageThumbnail"
    | "p2p:clearPreviewTemp"
    ```
 
@@ -148,51 +156,60 @@ Planned/ensured changes:
    }
    ```
 
-4. Add preview state:
+4. Add preview state.
+
+5. Add thumbnail state:
 
    ```ts
-   const [preview, setPreview] = useState<{
-     open: boolean;
-     url: string;
-     name: string;
-     tempId?: string;
-   } | null>(null);
+   const [thumbnailUrls, setThumbnailUrls] = useState<Record<string, string>>({});
+   const [thumbnailLoadingKeys, setThumbnailLoadingKeys] = useState<Set<string>>(new Set());
    ```
 
-5. Add `previewImage(file)` action calling:
+6. Add effect that requests thumbnails for visible image files through:
+
+   ```text
+   p2p:getImageThumbnail
+   ```
+
+7. Add `previewImage(file)` action calling:
 
    ```text
    p2p:previewImageToTemp
    ```
 
-6. Add `closePreview()` action calling:
+8. Add `closePreview()` action calling:
 
    ```text
    p2p:clearPreviewTemp
    ```
 
-7. Add Preview button for image files.
+9. Add Preview button for image files.
 
-8. Add double-click preview on image card.
+10. Add double-click preview on image card.
 
-9. Add modal viewer using:
+11. Add card thumbnail display:
+
+   ```tsx
+   <img src={thumbnailUrls[itemIdFor(file)]} />
+   ```
+
+12. Add modal viewer using:
 
    ```tsx
    <img src={preview.url} />
    ```
 
-Important: the renderer receives only a `chunknet-preview://...` URL, not file bytes.
+Important: the renderer receives only `chunknet-preview://...` URLs, not file bytes.
 
-## Why no thumbnail image yet?
+## How thumbnails work
 
-This change adds safe preview first.
-
-Thumbnail background can be added later by generating small cached thumbnails in Electron. It should also avoid returning raw file bytes to the renderer. Recommended follow-up:
-
-- Add `p2p:getImageThumbnail` or `p2p:ensureImageThumbnail`
-- Generate a small temp/cache thumbnail in Electron
-- Return `chunknet-preview://thumbnail/<id>` or another safe protocol URL
-- Never generate thumbnails in React from `Blob` or `arrayBuffer`
+- The renderer detects visible image files.
+- It calls `p2p:getImageThumbnail` with `hash`, `rootHash`, and drive password when needed.
+- Electron materializes the image safely on disk, decrypting via stream if encrypted.
+- Electron creates a small PNG using `nativeImage.resize`.
+- The thumbnail is cached on disk by file root/hash.
+- The renderer receives a `chunknet-preview://thumb-.../thumbnail.png` URL.
+- Old images also get thumbnails because thumbnails are generated lazily when the card becomes visible.
 
 ## How to apply locally
 
@@ -200,6 +217,7 @@ From the repo root:
 
 ```powershell
 git checkout big-file-upload-safe
+git stash push -m "before image preview thumbnails"
 git pull
 pnpm install
 pnpm run ensure:image-preview
@@ -207,20 +225,23 @@ pnpm run verify:large-files
 pnpm run electron:dev
 ```
 
+Use `git stash pop` later only after confirming the pulled version works.
+
 ## Manual test plan
 
 1. Start the app with `pnpm run electron:dev`.
 2. Login with Seed Account or Wallet.
 3. Enter Drive Password.
-4. Upload a `.jpg`, `.jpeg`, `.png`, or `.webp` file.
-5. Confirm the image card shows preview affordance.
-6. Double-click the image card.
-7. Confirm a modal opens with the image.
-8. Close the modal.
-9. Confirm no `Blocked unsafe IPC channel` error appears.
-10. Download the same file normally and confirm `p2p:downloadToPath` still uses save dialog.
-11. Upload a large file and confirm no renderer memory crash.
-12. Run:
+4. Open a folder with old `.jpg`, `.jpeg`, `.png`, or `.webp` files.
+5. Confirm image cards show a small real thumbnail.
+6. Upload a new image and confirm it also shows a thumbnail.
+7. Double-click the image card.
+8. Confirm a modal opens with the full image preview.
+9. Close the modal.
+10. Confirm no `Blocked unsafe IPC channel` error appears.
+11. Download the same file normally and confirm `p2p:downloadToPath` still uses save dialog.
+12. Upload a large non-image file and confirm no renderer memory crash.
+13. Run:
 
     ```powershell
     pnpm run verify:large-files
@@ -232,7 +253,7 @@ pnpm run electron:dev
 During runtime import:
 
 ```text
-[image-preview] installed disk-first image preview IPC
+[image-preview] installed disk-first image preview + thumbnail IPC
 [main-wrapper] image preview IPC import finished
 ```
 
@@ -245,28 +266,29 @@ During ensure script:
 or:
 
 ```text
-[ensure-image-preview-ipc] image preview already wired
+[ensure-image-preview-ipc] image preview + thumbnails already wired
 ```
 
 ## Known limitation
 
-Preview opens full image through a temporary decoded file. Very large images may still take time to decode/render in Chromium, but transfer/decryption stays disk-first and does not return full file bytes to React.
+Thumbnail generation still has to decode the image once in Electron. Very large images may take time to decode, but transfer/decryption stays disk-first and no full file bytes are returned to React.
 
 ## Rollback
 
 To disable the feature:
 
 1. Remove the `image-preview-ipc.js` import from runtime.
-2. Remove `p2p:previewImageToTemp` and `p2p:clearPreviewTemp` from `electron/ipc-contract.cjs`.
+2. Remove `p2p:previewImageToTemp`, `p2p:getImageThumbnail`, and `p2p:clearPreviewTemp` from `electron/ipc-contract.cjs`.
 3. Remove `ensure:image-preview` from `package.json` scripts.
-4. Remove preview UI blocks from `NativeP2PAppLive.tsx`.
+4. Remove preview/thumbnail UI blocks from `NativeP2PAppLive.tsx`.
 5. Delete `electron/image-preview-ipc.js` and `scripts/ensure-image-preview-ipc.cjs`.
 
 ## Commits made during this implementation
 
 - Added `electron/image-preview-ipc.js`
 - Added `scripts/ensure-image-preview-ipc.cjs`
-- Added preview IPC channels to `electron/ipc-contract.cjs`
+- Added preview/thumbnail IPC channels to `electron/ipc-contract.cjs`
 - Wired `ensure:image-preview` into package scripts
 - Imported image preview IPC in `electron/main-wrapper.js`
-- Added this tracking document
+- Added safe cached thumbnails through `p2p:getImageThumbnail`
+- Updated this tracking document
