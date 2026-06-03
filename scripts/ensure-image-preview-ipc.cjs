@@ -17,7 +17,15 @@ function patchIpcContract() {
   if (!text.includes("'p2p:previewImageToTemp'")) {
     text = text.replace(
       "  'p2p:downloadToPath',\n",
-      "  'p2p:downloadToPath',\n  'p2p:previewImageToTemp',\n  'p2p:clearPreviewTemp',\n"
+      "  'p2p:downloadToPath',\n  'p2p:previewImageToTemp',\n  'p2p:getImageThumbnail',\n  'p2p:clearPreviewTemp',\n"
+    );
+    changed = true;
+  }
+
+  if (text.includes("'p2p:previewImageToTemp'") && !text.includes("'p2p:getImageThumbnail'")) {
+    text = text.replace(
+      "  'p2p:previewImageToTemp',\n",
+      "  'p2p:previewImageToTemp',\n  'p2p:getImageThumbnail',\n"
     );
     changed = true;
   }
@@ -86,7 +94,15 @@ function patchRenderer() {
   if (!text.includes('| "p2p:previewImageToTemp"')) {
     text = text.replace(
       '  | "p2p:downloadToPath"\n',
-      '  | "p2p:downloadToPath"\n  | "p2p:previewImageToTemp"\n  | "p2p:clearPreviewTemp"\n'
+      '  | "p2p:downloadToPath"\n  | "p2p:previewImageToTemp"\n  | "p2p:getImageThumbnail"\n  | "p2p:clearPreviewTemp"\n'
+    );
+    changed = true;
+  }
+
+  if (text.includes('| "p2p:previewImageToTemp"') && !text.includes('| "p2p:getImageThumbnail"')) {
+    text = text.replace(
+      '  | "p2p:previewImageToTemp"\n',
+      '  | "p2p:previewImageToTemp"\n  | "p2p:getImageThumbnail"\n'
     );
     changed = true;
   }
@@ -110,7 +126,23 @@ function patchRenderer() {
   if (!text.includes('const [preview, setPreview]')) {
     text = text.replace(
       '  const [expandedFolderIds, setExpandedFolderIds] = useState<Set<string>>(new Set());\n',
-      '  const [expandedFolderIds, setExpandedFolderIds] = useState<Set<string>>(new Set());\n  const [preview, setPreview] = useState<{ open: boolean; url: string; name: string; tempId?: string } | null>(null);\n'
+      '  const [expandedFolderIds, setExpandedFolderIds] = useState<Set<string>>(new Set());\n  const [preview, setPreview] = useState<{ open: boolean; url: string; name: string; tempId?: string } | null>(null);\n  const [thumbnailUrls, setThumbnailUrls] = useState<Record<string, string>>({});\n  const [thumbnailLoadingKeys, setThumbnailLoadingKeys] = useState<Set<string>>(new Set());\n'
+    );
+    changed = true;
+  }
+
+  if (text.includes('const [preview, setPreview]') && !text.includes('const [thumbnailUrls, setThumbnailUrls]')) {
+    text = text.replace(
+      '  const [preview, setPreview] = useState<{ open: boolean; url: string; name: string; tempId?: string } | null>(null);\n',
+      '  const [preview, setPreview] = useState<{ open: boolean; url: string; name: string; tempId?: string } | null>(null);\n  const [thumbnailUrls, setThumbnailUrls] = useState<Record<string, string>>({});\n  const [thumbnailLoadingKeys, setThumbnailLoadingKeys] = useState<Set<string>>(new Set());\n'
+    );
+    changed = true;
+  }
+
+  if (!text.includes('api.invoke<{ ok?: boolean; thumbnailUrl?: string }>(')) {
+    text = text.replace(
+      `const uploaderLabel = (file: P2PFile, cf?: CompanyFile | null): string => {`,
+      `useEffect(() => {\n  if (!api || !identityConnected || !drivePassword.trim()) return;\n\n  const imageFiles = visibleFiles.filter(isImageFile).slice(0, 80);\n  const missing = imageFiles.filter((file) => {\n    const key = itemIdFor(file);\n    return key && !thumbnailUrls[key] && !thumbnailLoadingKeys.has(key);\n  });\n\n  if (!missing.length) return;\n\n  setThumbnailLoadingKeys((prev) => {\n    const next = new Set(prev);\n    for (const file of missing) next.add(itemIdFor(file));\n    return next;\n  });\n\n  let cancelled = false;\n\n  void Promise.allSettled(\n    missing.map(async (file) => {\n      const key = itemIdFor(file);\n      const result = await api.invoke<{ ok?: boolean; thumbnailUrl?: string }>("p2p:getImageThumbnail", {\n        hash: file.hash,\n        rootHash: file.rootHash,\n        name: file.name,\n        drivePassword: file.isEncrypted ? password() : null,\n        maxSize: 256,\n      });\n\n      if (!cancelled && result?.thumbnailUrl) {\n        setThumbnailUrls((prev) => ({ ...prev, [key]: result.thumbnailUrl || "" }));\n      }\n    })\n  ).finally(() => {\n    if (cancelled) return;\n    setThumbnailLoadingKeys((prev) => {\n      const next = new Set(prev);\n      for (const file of missing) next.delete(itemIdFor(file));\n      return next;\n    });\n  });\n\n  return () => {\n    cancelled = true;\n  };\n}, [api, identityConnected, drivePassword, visibleFiles, thumbnailUrls, thumbnailLoadingKeys]);\n\nconst uploaderLabel = (file: P2PFile, cf?: CompanyFile | null): string => {`
     );
     changed = true;
   }
@@ -124,17 +156,24 @@ function patchRenderer() {
   }
 
   const oldThumb = `          <div className="flex h-20 items-center justify-center rounded-2xl bg-zinc-950">\n            <FileCheck2 className="size-9 text-zinc-500" />\n          </div>`;
-  const newThumb = `          <button\n            type="button"\n            onDoubleClick={() => {\n              if (isImageFile(file)) void previewImage(file);\n            }}\n            className={\`flex h-28 w-full items-center justify-center overflow-hidden rounded-2xl border border-zinc-800 bg-zinc-950 transition-all \${isImageFile(file) ? "cursor-zoom-in hover:border-blue-500 hover:bg-blue-950/20" : ""}\`}\n            title={isImageFile(file) ? "Double click to preview image" : "File"}\n          >\n            {isImageFile(file) ? (\n              <div className="flex flex-col items-center justify-center gap-2 text-blue-300">\n                <Eye className="size-8" />\n                <span className="text-xs text-zinc-400">Double click to preview</span>\n              </div>\n            ) : (\n              <FileCheck2 className="size-9 text-zinc-500" />\n            )}\n          </button>`;
+  const newThumb = `          <button\n            type="button"\n            onDoubleClick={() => {\n              if (isImageFile(file)) void previewImage(file);\n            }}\n            className={\`flex h-32 w-full items-center justify-center overflow-hidden rounded-2xl border border-zinc-800 bg-zinc-950 transition-all \${isImageFile(file) ? "cursor-zoom-in hover:border-blue-500 hover:bg-blue-950/20" : ""}\`}\n            title={isImageFile(file) ? "Double click to preview image" : "File"}\n          >\n            {isImageFile(file) ? (\n              thumbnailUrls[itemIdFor(file)] ? (\n                <img\n                  src={thumbnailUrls[itemIdFor(file)]}\n                  alt={displayName}\n                  className="h-full w-full object-cover"\n                  loading="lazy"\n                />\n              ) : (\n                <div className="flex flex-col items-center justify-center gap-2 text-blue-300">\n                  <Eye className="size-8" />\n                  <span className="text-xs text-zinc-400">{thumbnailLoadingKeys.has(itemIdFor(file)) ? "Loading thumbnail..." : "Double click to preview"}</span>\n                </div>\n              )\n            ) : (\n              <FileCheck2 className="size-9 text-zinc-500" />\n            )}\n          </button>`;
 
-  if (text.includes(oldThumb) && !text.includes('Double click to preview image')) {
+  if (text.includes(oldThumb) && !text.includes('Loading thumbnail...')) {
     text = text.replace(oldThumb, newThumb);
+    changed = true;
+  }
+
+  const previousPreviewOnlyThumb = `          <button\n            type="button"\n            onDoubleClick={() => {\n              if (isImageFile(file)) void previewImage(file);\n            }}\n            className={\`flex h-28 w-full items-center justify-center overflow-hidden rounded-2xl border border-zinc-800 bg-zinc-950 transition-all \${isImageFile(file) ? "cursor-zoom-in hover:border-blue-500 hover:bg-blue-950/20" : ""}\`}\n            title={isImageFile(file) ? "Double click to preview image" : "File"}\n          >\n            {isImageFile(file) ? (\n              <div className="flex flex-col items-center justify-center gap-2 text-blue-300">\n                <Eye className="size-8" />\n                <span className="text-xs text-zinc-400">Double click to preview</span>\n              </div>\n            ) : (\n              <FileCheck2 className="size-9 text-zinc-500" />\n            )}\n          </button>`;
+
+  if (text.includes(previousPreviewOnlyThumb) && !text.includes('Loading thumbnail...')) {
+    text = text.replace(previousPreviewOnlyThumb, newThumb);
     changed = true;
   }
 
   const downloadButton = `            <Button size="sm" onClick={() => download(file)} disabled={busy} className="text-xs">\n              <Download className="size-3" />\n              Download\n            </Button>`;
   const previewButton = `            {isImageFile(file) && (\n              <Button\n                variant="outline"\n                size="sm"\n                onClick={() => previewImage(file)}\n                disabled={busy}\n                className="text-xs"\n              >\n                <Eye className="size-3" />\n                Preview\n              </Button>\n            )}\n\n${downloadButton}`;
 
-  if (text.includes(downloadButton) && !text.includes('Double click to preview')) {
+  if (text.includes(downloadButton) && !text.includes('Preview\n              </Button>\n            )}\n\n            <Button size="sm" onClick={() => download(file)}')) {
     text = text.replace(downloadButton, previewButton);
     changed = true;
   }
@@ -158,4 +197,4 @@ if (patchMainWrapper()) changes.push('electron/main-wrapper.js');
 if (patchElectronDev()) changes.push('scripts/electron-dev-cloud.cjs');
 if (patchRenderer()) changes.push('client/src/NativeP2PAppLive.tsx');
 
-console.log(changes.length ? `[ensure-image-preview-ipc] patched ${changes.join(', ')}` : '[ensure-image-preview-ipc] image preview already wired');
+console.log(changes.length ? `[ensure-image-preview-ipc] patched ${changes.join(', ')}` : '[ensure-image-preview-ipc] image preview + thumbnails already wired');
