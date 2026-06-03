@@ -1,3 +1,5 @@
+﻿import './paypal-subscription-ipc.js';
+import './protection-retry-early-ipc.js';
 import { app, BrowserWindow, ipcMain, shell, dialog } from 'electron';
 import { verifyMessage } from 'viem';
 import crypto from 'node:crypto';
@@ -35,11 +37,17 @@ const WALLET_LOGIN_MAX_FUTURE_MS = 2 * 60 * 1000;
 const FOLDER_MANIFEST_KIND = 'folder';
 
 const PLANS = {
-  free: { id: 'free', name: 'Free', quotaBytes: FREE_QUOTA_BYTES, priceUsd: 0, locked: false },
-  tb1: { id: 'tb1', name: '1 TB', quotaBytes: 1 * 1024 ** 4, priceUsd: 1, locked: true },
-  tb3: { id: 'tb3', name: '3 TB', quotaBytes: 3 * 1024 ** 4, priceUsd: 2.5, locked: true },
-  tb7: { id: 'tb7', name: '7 TB', quotaBytes: 7 * 1024 ** 4, priceUsd: 4.99, locked: true },
-  tb10: { id: 'tb10', name: '10 TB', quotaBytes: 10 * 1024 ** 4, priceUsd: 7.99, locked: true },
+  free: { id: 'free', name: 'Trial', quotaBytes: FREE_QUOTA_BYTES, priceUsd: 0, locked: false, trialDays: TRIAL_DAYS, description: '10 GB trial for 7 days' },
+  trial: { id: 'trial', name: 'Trial', quotaBytes: FREE_QUOTA_BYTES, priceUsd: 0, locked: false, trialDays: TRIAL_DAYS, description: '10 GB trial for 7 days' },
+  starter: { id: 'starter', name: 'Starter', quotaBytes: 100 * 1024 ** 3, priceUsd: 2.99, locked: true, description: '100 GB storage plan' },
+  personal: { id: 'personal', name: 'Personal', quotaBytes: 1 * 1024 ** 4, priceUsd: 7.99, locked: true, description: '1 TB storage plan' },
+  plus: { id: 'plus', name: 'Plus', quotaBytes: 3 * 1024 ** 4, priceUsd: 14.99, locked: true, description: '3 TB storage plan' },
+  pro: { id: 'pro', name: 'Pro', quotaBytes: 7 * 1024 ** 4, priceUsd: 24.99, locked: true, description: '7 TB storage plan' },
+  ultra: { id: 'ultra', name: 'Ultra', quotaBytes: 10 * 1024 ** 4, priceUsd: 34.99, locked: true, description: '10 TB storage plan' },
+  tb1: { id: 'tb1', aliasFor: 'personal', name: 'Personal', quotaBytes: 1 * 1024 ** 4, priceUsd: 7.99, locked: true, hidden: true },
+  tb3: { id: 'tb3', aliasFor: 'plus', name: 'Plus', quotaBytes: 3 * 1024 ** 4, priceUsd: 14.99, locked: true, hidden: true },
+  tb7: { id: 'tb7', aliasFor: 'pro', name: 'Pro', quotaBytes: 7 * 1024 ** 4, priceUsd: 24.99, locked: true, hidden: true },
+  tb10: { id: 'tb10', aliasFor: 'ultra', name: 'Ultra', quotaBytes: 10 * 1024 ** 4, priceUsd: 34.99, locked: true, hidden: true },
 };
 
 let mainWindow = null;
@@ -195,7 +203,7 @@ async function deriveDriveKey({ ownerWallet = activeWallet(), drivePassword, sal
   const password = validateDrivePassword(drivePassword);
   const saltBuffer = Buffer.isBuffer(salt) ? salt : Buffer.from(String(salt || ''), 'base64');
 
-  // async pbkdf2 — does NOT block the main thread (was pbkdf2Sync with 310k iterations)
+  // async pbkdf2 â€” does NOT block the main thread (was pbkdf2Sync with 310k iterations)
   return new Promise((resolve, reject) =>
     crypto.pbkdf2(`${identity}:${password}`, saltBuffer, KDF_ITERATIONS, 32, 'sha256',
       (err, key) => (err ? reject(err) : resolve(key)))
@@ -592,6 +600,7 @@ function isPayPalApproveUrl(value = '') {
   }
 }
 
+try { ipcMain.removeHandler('paypal:openCheckout'); } catch {}
 ipcMain.handle('paypal:openCheckout', async (_event, payload = {}) => {
   const approveUrl = String(payload.approveUrl || '').trim();
   const returnUrl = String(payload.returnUrl || 'https://example.com/chunknet-payment-success').trim();
@@ -724,6 +733,47 @@ ipcMain.handle('p2p:setUiPrefs', async (_event, payload = {}) => {
   const { ok: _ok, prefs: _prefs, ...cleanIncoming } = incoming || {};
   const prefs = writeUiPrefs({ ...readUiPrefs(), ...cleanIncoming });
   return { ok: true, prefs };
+});
+
+
+function auditLogPath() {
+  ensureDataDir();
+  return path.join(dataDir, 'audit-log.json');
+}
+
+function readAuditLog() {
+  try {
+    const file = auditLogPath();
+    if (!fs.existsSync(file)) return [];
+    const parsed = JSON.parse(fs.readFileSync(file, 'utf8'));
+    return Array.isArray(parsed) ? parsed : [];
+  } catch {
+    return [];
+  }
+}
+
+function writeAuditLog(events = []) {
+  fs.mkdirSync(path.dirname(auditLogPath()), { recursive: true });
+  fs.writeFileSync(auditLogPath(), JSON.stringify(Array.isArray(events) ? events : [], null, 2), 'utf8');
+}
+
+ipcMain.handle('audit:list', async (_event, payload = {}) => {
+  const limit = Math.max(1, Math.min(500, Number(payload.limit || 100)));
+  return { ok: true, events: readAuditLog().slice(-limit).reverse() };
+});
+
+ipcMain.handle('audit:append', async (_event, payload = {}) => {
+  const events = readAuditLog();
+  const event = {
+    auditId: String(payload.auditId || crypto.randomUUID()),
+    action: String(payload.action || 'unknown'),
+    actor: String(payload.actor || activeWallet() || 'unknown'),
+    at: String(payload.at || new Date().toISOString()),
+    details: payload.details && typeof payload.details === 'object' ? payload.details : {},
+  };
+  events.push(event);
+  writeAuditLog(events.slice(-2000));
+  return { ok: true, event };
 });
 
 ipcMain.handle('p2p:start', async (_event, options = {}) => { ensureDataDir(); loadWallet(); loadManifests(); ensureTransport(options); if (walletState.connected && walletState.verified) { await syncPull(); startAutoRepairLoop(); } return networkSummary(); });
@@ -1518,7 +1568,7 @@ function findOwnedManifestItemById(itemId = '') {
 
   if (found) return found;
 
-  // Folder fallback: بعض الفولدرات القديمة بتطلع في الواجهة بس مش محفوظة كـ manifest كامل.
+  // Folder fallback: Ø¨Ø¹Ø¶ Ø§Ù„ÙÙˆÙ„Ø¯Ø±Ø§Øª Ø§Ù„Ù‚Ø¯ÙŠÙ…Ø© Ø¨ØªØ·Ù„Ø¹ ÙÙŠ Ø§Ù„ÙˆØ§Ø¬Ù‡Ø© Ø¨Ø³ Ù…Ø´ Ù…Ø­ÙÙˆØ¸Ø© ÙƒÙ€ manifest ÙƒØ§Ù…Ù„.
   return {
     kind: 'folder',
     type: 'folder',
@@ -1801,7 +1851,7 @@ ipcMain.handle('p2p:downloadToPath', async (_event, payload = {}) => {
 
   try {
     if (!manifest.isEncrypted) {
-      // ── STREAMING PATH (non-encrypted): write each chunk at its disk offset ──
+      // â”€â”€ STREAMING PATH (non-encrypted): write each chunk at its disk offset â”€â”€
       // Peak RAM = one chunk (~2MB), not the whole file.
       const fd = await fs.promises.open(save.filePath, 'w');
       try {
@@ -1817,7 +1867,7 @@ ipcMain.handle('p2p:downloadToPath', async (_event, payload = {}) => {
         await fd.close();
       }
     } else {
-      // ── BUFFERED PATH (encrypted): AES-GCM needs full ciphertext in memory ──
+      // â”€â”€ BUFFERED PATH (encrypted): AES-GCM needs full ciphertext in memory â”€â”€
       const buffers = new Array(orderedChunks.length);
       await mapWithConcurrency(orderedChunks, downloadConcurrency, async (meta) => {
         const chunk = await fetchChunk(meta);
@@ -1866,6 +1916,7 @@ ipcMain.handle('p2p:prepareProof', async (_event, payload = {}) => { assertVerif
 app.whenReady().then(async () => { app.setName(APP_TITLE); ensureDataDir(); loadWallet(); loadManifests(); ensureTransport({}); if (walletState.connected && walletState.verified) { await syncPull(); startAutoRepairLoop(); } createMainWindow(); app.on('activate', () => { if (BrowserWindow.getAllWindows().length === 0) createMainWindow(); }); }).catch((error) => { console.error('Electron failed:', error); app.exit(1); });
 app.on('before-quit', () => { stopAutoRepairLoop(); persistWallet(); persistManifests(); if (transportNode) transportNode.stop(); });
 app.on('window-all-closed', () => {});
+
 
 
 
