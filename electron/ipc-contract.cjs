@@ -25,6 +25,8 @@ const IPC_CHANNELS = Object.freeze([
   'p2p:uploadPath',
 
   'p2p:downloadToPath',
+  'p2p:previewImageToTemp',
+  'p2p:clearPreviewTemp',
   'p2p:importSharedLink',
 
   'p2p:updateFile',
