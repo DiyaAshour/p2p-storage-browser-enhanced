@@ -323,6 +323,8 @@ async function importMainWhenReady() {
     console.log('[main-wrapper] protection retry loop import finished');
     await import('./download-to-path-override.js');
     console.log('[main-wrapper] download override import finished');
+    await import('./image-preview-ipc.js');
+    console.log('[main-wrapper] image preview IPC import finished');
     await import('./hard-delete-override.js');
     console.log('[main-wrapper] hard delete override import finished');
     await import('./delete-tombstone-sync.js');
@@ -378,15 +380,3 @@ startChunknet().catch((error) => {
 });
 
 app.on('before-quit', () => { isQuitting = true; });
-
-app.whenReady().then(() => {
-  createTray();
-  setTimeout(() => createFallbackWindow('safety fallback after ready'), 5000);
-});
-
-app.on('window-all-closed', (event) => {
-  if (IS_DEV_WRAPPER || isQuitting || process.platform !== 'darwin') app.quit();
-  else event?.preventDefault?.();
-});
-
-app.on('activate', () => showMainWindow());
