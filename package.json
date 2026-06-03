@@ -15,7 +15,7 @@
     "ensure:hard-delete-file-only": "node scripts/ensure-hard-delete-file-only-match.cjs",
     "ensure:tombstone-hidden": "node scripts/ensure-tombstone-hidden-from-listfiles.cjs",
     "ensure:protection-retry-ipc": "node scripts/ensure-protection-retry-early-ipc.cjs",
-    "ensure:image-preview": "node scripts/ensure-image-preview-ipc.cjs",
+    "ensure:image-preview": "node scripts/ensure-image-preview-ipc.cjs && node scripts/fix-thumbnail-on-demand.cjs",
     "audit:secrets": "node scripts/check-secrets.mjs",
     "security:scan": "node scripts/security-scan.cjs",
     "production:scan": "node scripts/production-scan.cjs",
