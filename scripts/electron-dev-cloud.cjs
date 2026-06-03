@@ -78,6 +78,7 @@ runOptionalScript('scripts/ensure-cloud-defaults.cjs');
 runOptionalScript('scripts/ensure-renderer-paypal-ipc.cjs');
 runOptionalScript('scripts/ensure-hard-delete-cleanup-audit.cjs');
 runOptionalScript('scripts/ensure-protection-retry-early-ipc.cjs');
+runOptionalScript('scripts/ensure-image-preview-ipc.cjs');
 
 runOptionalScript('scripts/apply-paypal-checkout-runtime.cjs');
 runOptionalScript('scripts/apply-paypal-subscriptions-runtime.cjs');
