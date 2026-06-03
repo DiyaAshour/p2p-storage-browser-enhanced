@@ -26,8 +26,26 @@ function patchIpcContract() {
   return changed;
 }
 
+function patchMainJs() {
+  const file = path.join('electron', 'main.js');
+  let text = read(file);
+  let changed = false;
+
+  if (!text.includes("./image-preview-ipc.js")) {
+    text = text.replace(
+      "import './protection-retry-early-ipc.js';\n",
+      "import './protection-retry-early-ipc.js';\nimport './image-preview-ipc.js';\n"
+    );
+    changed = true;
+  }
+
+  if (changed) write(file, text);
+  return changed;
+}
+
 function patchMainWrapper() {
   const file = path.join('electron', 'main-wrapper.js');
+  if (!fs.existsSync(file)) return false;
   let text = read(file);
   let changed = false;
 
@@ -116,7 +134,7 @@ function patchRenderer() {
   const downloadButton = `            <Button size="sm" onClick={() => download(file)} disabled={busy} className="text-xs">\n              <Download className="size-3" />\n              Download\n            </Button>`;
   const previewButton = `            {isImageFile(file) && (\n              <Button\n                variant="outline"\n                size="sm"\n                onClick={() => previewImage(file)}\n                disabled={busy}\n                className="text-xs"\n              >\n                <Eye className="size-3" />\n                Preview\n              </Button>\n            )}\n\n${downloadButton}`;
 
-  if (text.includes(downloadButton) && !text.includes('Preview\n              </Button>\n            )}\n\n            <Button size="sm" onClick={() => download(file)}')) {
+  if (text.includes(downloadButton) && !text.includes('Double click to preview')) {
     text = text.replace(downloadButton, previewButton);
     changed = true;
   }
@@ -135,6 +153,7 @@ function patchRenderer() {
 
 const changes = [];
 if (patchIpcContract()) changes.push('electron/ipc-contract.cjs');
+if (patchMainJs()) changes.push('electron/main.js');
 if (patchMainWrapper()) changes.push('electron/main-wrapper.js');
 if (patchElectronDev()) changes.push('scripts/electron-dev-cloud.cjs');
 if (patchRenderer()) changes.push('client/src/NativeP2PAppLive.tsx');
