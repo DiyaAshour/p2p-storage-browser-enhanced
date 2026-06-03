@@ -58,6 +58,7 @@ function runOptionalScript(scriptPath) {
 loadLocalEnv('.env.local');
 loadLocalEnv('.env');
 
+setDefault('P2P_CHUNK_SIZE_BYTES', String(2 * 1024 * 1024));
 setDefault('P2P_TARGET_REPLICAS', '4');
 setDefault('P2P_BOOTSTRAP_URL', `ws://${serverIp}:8788`);
 setDefault('P2P_MANIFEST_SYNC_URL', `http://${serverIp}:8790`);
@@ -105,6 +106,7 @@ if (!process.env.P2P_SAFETY_PEER_DELETE_TOKEN && fs.existsSync(sshKey)) {
 console.log('[cloud-dev] Bootstrap:', process.env.P2P_BOOTSTRAP_URL);
 console.log('[cloud-dev] Manifest: ', process.env.P2P_MANIFEST_SYNC_URL);
 console.log('[cloud-dev] Safety:   ', process.env.P2P_SAFETY_PEER_URL);
+console.log('[cloud-dev] ChunkSize:', process.env.P2P_CHUNK_SIZE_BYTES);
 console.log('[cloud-dev] Replicas: ', process.env.P2P_TARGET_REPLICAS);
 console.log('[cloud-dev] PayPal:   ', process.env.PAYPAL_CHECKOUT_URL, process.env.PAYPAL_ENV || 'sandbox', process.env.PAYPAL_CLIENT_ID ? 'configured' : 'remote');
 
