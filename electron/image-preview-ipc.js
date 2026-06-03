@@ -1,4 +1,4 @@
-import { app, ipcMain, protocol } from 'electron';
+import { app, ipcMain, protocol, nativeImage } from 'electron';
 import crypto from 'node:crypto';
 import fs from 'node:fs';
 import path from 'node:path';
@@ -171,10 +171,34 @@ function tempPreviewPath(tempId, name) {
   return path.join(app.getPath('temp'), 'chunknet-previews', `${tempId}-${safeName(name || 'preview')}`);
 }
 
+function thumbnailDir() {
+  return path.join(app.getPath('userData'), 'native-p2p-storage', 'thumbnails');
+}
+
+function thumbnailPathFor(manifest = {}) {
+  const id = String(manifest.rootHash || manifest.hash || sha256(Buffer.from(String(manifest.name || 'image'))));
+  return path.join(thumbnailDir(), `${id}.png`);
+}
+
+function rememberFile({ id, filePath, mime, name, createdAt = Date.now(), persistent = false, cipherPath = null }) {
+  previewFiles.set(id, {
+    path: filePath,
+    cipherPath,
+    mime,
+    name,
+    createdAt,
+    persistent,
+  });
+}
+
+function urlFor(id, name = 'preview') {
+  return `${PREVIEW_SCHEME}://${encodeURIComponent(id)}/${encodeURIComponent(safeName(name || 'preview'))}`;
+}
+
 function cleanupPreview(tempId) {
   const item = previewFiles.get(String(tempId || ''));
   previewFiles.delete(String(tempId || ''));
-  if (item?.path) {
+  if (!item?.persistent && item?.path) {
     try { fs.unlinkSync(item.path); } catch {}
   }
   if (item?.cipherPath) {
@@ -185,7 +209,7 @@ function cleanupPreview(tempId) {
 function cleanupOldPreviews(maxAgeMs = 60 * 60 * 1000) {
   const now = Date.now();
   for (const [tempId, item] of previewFiles.entries()) {
-    if (now - Number(item.createdAt || 0) > maxAgeMs) cleanupPreview(tempId);
+    if (!item?.persistent && now - Number(item.createdAt || 0) > maxAgeMs) cleanupPreview(tempId);
   }
 }
 
@@ -206,7 +230,7 @@ async function ensurePreviewProtocol() {
       return new Response(Readable.toWeb(fs.createReadStream(item.path)), {
         headers: {
           'content-type': item.mime || 'application/octet-stream',
-          'cache-control': 'no-store',
+          'cache-control': item.persistent ? 'private, max-age=86400' : 'no-store',
         },
       });
     });
@@ -217,14 +241,7 @@ async function ensurePreviewProtocol() {
   protocolReady = true;
 }
 
-async function createImagePreview(payload = {}) {
-  await ensurePreviewProtocol();
-  cleanupOldPreviews();
-
-  const manifest = findManifest(payload);
-  if (!manifest) throw new Error('File not found for this identity');
-  if (!isImageManifest(manifest)) throw new Error('Preview is available only for image files');
-
+async function materializeImageToTemp(manifest, drivePassword) {
   const tempId = crypto.randomUUID();
   const finalPath = tempPreviewPath(tempId, manifest.name || 'preview');
   const cipherPath = `${finalPath}.cipher`;
@@ -233,25 +250,11 @@ async function createImagePreview(payload = {}) {
     await writeChunksToTemp(manifest, manifest.isEncrypted ? cipherPath : finalPath);
 
     if (manifest.isEncrypted) {
-      await decryptTempToFile(cipherPath, finalPath, manifest, payload.drivePassword);
+      await decryptTempToFile(cipherPath, finalPath, manifest, drivePassword);
       try { fs.unlinkSync(cipherPath); } catch {}
     }
 
-    const mime = mimeFor(manifest);
-    previewFiles.set(tempId, {
-      path: finalPath,
-      cipherPath: null,
-      mime,
-      name: manifest.name || 'preview',
-      createdAt: Date.now(),
-    });
-
-    return {
-      ok: true,
-      tempId,
-      previewUrl: `${PREVIEW_SCHEME}://${encodeURIComponent(tempId)}/${encodeURIComponent(safeName(manifest.name || 'preview'))}`,
-      file: { ...manifest, mimeType: mime },
-    };
+    return { tempId, finalPath, cipherPath: null };
   } catch (error) {
     try { fs.unlinkSync(finalPath); } catch {}
     try { fs.unlinkSync(cipherPath); } catch {}
@@ -259,8 +262,72 @@ async function createImagePreview(payload = {}) {
   }
 }
 
+async function createImagePreview(payload = {}) {
+  await ensurePreviewProtocol();
+  cleanupOldPreviews();
+
+  const manifest = findManifest(payload);
+  if (!manifest) throw new Error('File not found for this identity');
+  if (!isImageManifest(manifest)) throw new Error('Preview is available only for image files');
+
+  const { tempId, finalPath } = await materializeImageToTemp(manifest, payload.drivePassword);
+  const mime = mimeFor(manifest);
+  rememberFile({ id: tempId, filePath: finalPath, mime, name: manifest.name || 'preview' });
+
+  return {
+    ok: true,
+    tempId,
+    previewUrl: urlFor(tempId, manifest.name || 'preview'),
+    file: { ...manifest, mimeType: mime },
+  };
+}
+
+async function createImageThumbnail(payload = {}) {
+  await ensurePreviewProtocol();
+  cleanupOldPreviews();
+
+  const manifest = findManifest(payload);
+  if (!manifest) throw new Error('File not found for this identity');
+  if (!isImageManifest(manifest)) return { ok: false, skipped: true, reason: 'not-image' };
+
+  const outputPath = thumbnailPathFor(manifest);
+  const thumbId = `thumb-${String(manifest.rootHash || manifest.hash || crypto.randomUUID())}`;
+
+  if (fs.existsSync(outputPath)) {
+    rememberFile({ id: thumbId, filePath: outputPath, mime: 'image/png', name: manifest.name || 'thumbnail', persistent: true });
+    return { ok: true, thumbnailUrl: urlFor(thumbId, 'thumbnail.png'), tempId: thumbId, cached: true };
+  }
+
+  const { tempId, finalPath } = await materializeImageToTemp(manifest, payload.drivePassword);
+
+  try {
+    const image = nativeImage.createFromPath(finalPath);
+    if (image.isEmpty()) throw new Error('Electron could not decode this image for thumbnail');
+
+    const size = image.getSize();
+    const maxSize = Math.max(64, Math.min(512, Number(payload.maxSize || 256)));
+    const scale = Math.min(maxSize / Math.max(1, size.width), maxSize / Math.max(1, size.height), 1);
+    const thumbnail = image.resize({
+      width: Math.max(1, Math.round(size.width * scale)),
+      height: Math.max(1, Math.round(size.height * scale)),
+      quality: 'best',
+    });
+
+    await fs.promises.mkdir(path.dirname(outputPath), { recursive: true });
+    await fs.promises.writeFile(outputPath, thumbnail.toPNG());
+    rememberFile({ id: thumbId, filePath: outputPath, mime: 'image/png', name: manifest.name || 'thumbnail', persistent: true });
+
+    return { ok: true, thumbnailUrl: urlFor(thumbId, 'thumbnail.png'), tempId: thumbId, cached: false };
+  } finally {
+    cleanupPreview(tempId);
+  }
+}
+
 try { ipcMain.removeHandler('p2p:previewImageToTemp'); } catch {}
 ipcMain.handle('p2p:previewImageToTemp', async (_event, payload = {}) => createImagePreview(payload));
+
+try { ipcMain.removeHandler('p2p:getImageThumbnail'); } catch {}
+ipcMain.handle('p2p:getImageThumbnail', async (_event, payload = {}) => createImageThumbnail(payload));
 
 try { ipcMain.removeHandler('p2p:clearPreviewTemp'); } catch {}
 ipcMain.handle('p2p:clearPreviewTemp', async (_event, payload = {}) => {
@@ -273,5 +340,5 @@ app.on('before-quit', () => {
 });
 
 ensurePreviewProtocol()
-  .then(() => console.log('[image-preview] installed disk-first image preview IPC'))
+  .then(() => console.log('[image-preview] installed disk-first image preview + thumbnail IPC'))
   .catch((error) => console.warn('[image-preview] protocol install failed:', error?.message || error));
