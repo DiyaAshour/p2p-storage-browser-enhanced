@@ -79,6 +79,14 @@ runOptionalScript('scripts/ensure-renderer-paypal-ipc.cjs');
 runOptionalScript('scripts/ensure-hard-delete-cleanup-audit.cjs');
 runOptionalScript('scripts/ensure-protection-retry-early-ipc.cjs');
 runOptionalScript('scripts/ensure-image-preview-ipc.cjs');
+runOptionalScript('scripts/fix-thumbnail-on-demand.cjs');
+runOptionalScript('scripts/fix-thumbnail-stuck-and-audit.cjs');
+runOptionalScript('scripts/fix-no-window-prompt-rename.cjs');
+runOptionalScript('scripts/fix-audit-record-main-no-duplicate.cjs');
+runOptionalScript('scripts/fix-add-to-company-button-visible.cjs');
+runOptionalScript('scripts/fix-company-upload-scope.cjs');
+runOptionalScript('scripts/fix-company-upload-scope-v2.cjs');
+runOptionalScript('scripts/fix-company-upload-scope-v3.cjs');
 
 runOptionalScript('scripts/apply-paypal-checkout-runtime.cjs');
 runOptionalScript('scripts/apply-paypal-subscriptions-runtime.cjs');
