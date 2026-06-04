@@ -286,6 +286,10 @@ async function createImageThumbnail(payload = {}) {
   await ensurePreviewProtocol();
   cleanupOldPreviews();
 
+  if (payload.userRequested !== true) {
+    return { ok: false, skipped: true, reason: 'thumbnail-requires-explicit-user-request' };
+  }
+
   const manifest = findManifest(payload);
   if (!manifest) throw new Error('File not found for this identity');
   if (!isImageManifest(manifest)) return { ok: false, skipped: true, reason: 'not-image' };
@@ -340,5 +344,5 @@ app.on('before-quit', () => {
 });
 
 ensurePreviewProtocol()
-  .then(() => console.log('[image-preview] installed disk-first image preview + thumbnail IPC'))
+  .then(() => console.log('[image-preview] installed disk-first image preview + explicit thumbnail IPC'))
   .catch((error) => console.warn('[image-preview] protocol install failed:', error?.message || error));
