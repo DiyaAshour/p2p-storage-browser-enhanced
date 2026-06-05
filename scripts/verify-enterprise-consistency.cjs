@@ -106,6 +106,14 @@ if (!mainWrapper.includes("company-distributed-objects-ipc.js")) {
   fail.push('electron/main-wrapper.js: company distributed object hardening module is not imported');
 }
 
+if (mainWrapper.includes("company-drive-ipc.js")) {
+  fail.push('electron/main-wrapper.js: legacy company-drive-ipc.js must not be imported in production startup');
+}
+
+if (app.includes("company:addFile") && !app.includes("p2p:uploadFiles")) {
+  fail.push('client/src/NativeP2PAppLive.tsx: company:addFile must be backed by the streaming p2p:uploadFiles flow');
+}
+
 if (fail.length) {
   console.error('[verify-enterprise-consistency] failed');
   for (const item of fail) console.error(`- ${item}`);
