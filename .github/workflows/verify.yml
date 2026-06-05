@@ -3,6 +3,7 @@ name: Verify
 on:
   push:
     branches:
+      - Chunknet
       - big-file-upload-safe
       - main
   pull_request:
