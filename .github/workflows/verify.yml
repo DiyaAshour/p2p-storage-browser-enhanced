@@ -1,6 +1,7 @@
 name: Verify
 
 on:
+  workflow_dispatch:
   push:
     branches:
       - Chunknet
