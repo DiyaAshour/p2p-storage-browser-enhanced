@@ -15,16 +15,23 @@ function mustInclude(needle, label) {
   if (!server.includes(needle)) failures.push(`Missing ${label}`);
 }
 
-mustInclude('process.env.MANIFEST_SYNC_REQUIRE_AUTH ?? "true"', 'default-on manifest write guard');
-mustInclude('function requireManifestAuth', 'manifest write guard middleware');
+function mustNotInclude(needle, label) {
+  if (server.includes(needle)) failures.push(`Forbidden ${label}`);
+}
+
+mustInclude('process.env.MANIFEST_SYNC_REQUIRE_AUTH ?? "true"', 'default-on manifest auth guard');
+mustInclude('function requireManifestAuth', 'manifest auth middleware');
+mustInclude('app.get("/wallet/:address/manifests", requireManifestAuth,', 'protected manifest read route');
 mustInclude('app.post("/wallet/:address/manifests", requireManifestAuth,', 'protected manifest write route');
 mustInclude('app.delete("/wallet/:address/manifests/:hash", requireManifestAuth,', 'protected manifest delete route');
+mustInclude('function normalizeAuthBody', 'shared auth body normalization for GET/DELETE/POST');
 mustInclude('crypto.createHmac("sha256",', 'request signature verification');
 mustInclude('crypto.timingSafeEqual', 'timing safe comparison');
 mustInclude('usedNonces.has(nonceKey)', 'nonce replay protection');
 mustInclude('Math.abs(now - ts) > AUTH_MAX_AGE_MS', 'timestamp age guard');
 mustInclude('identity !== normalizeIdentity(expectedIdentity)', 'identity ownership guard');
 mustInclude('ownerWallet !== address', 'manifest ownership guard');
+mustNotInclude('app.get("/wallet/:address/manifests", (req, res)', 'unprotected manifest read route');
 
 if (failures.length) {
   console.error('[verify-manifest-auth-routes] failed');
@@ -32,4 +39,4 @@ if (failures.length) {
   process.exit(1);
 }
 
-console.log('[verify-manifest-auth-routes] ok: manifest mutation routes are protected');
+console.log('[verify-manifest-auth-routes] ok: manifest read/write/delete routes are protected');
