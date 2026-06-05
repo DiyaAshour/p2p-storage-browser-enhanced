@@ -42,6 +42,11 @@ function authSecret() {
   return String(process.env.MANIFEST_SYNC_AUTH_SECRET || process.env.P2P_MANIFEST_SYNC_AUTH_SECRET || "").trim();
 }
 
+function normalizeAuthBody(req) {
+  if (req.method === "GET" || req.method === "DELETE" || req.body === undefined) return "";
+  return JSON.stringify(req.body || {});
+}
+
 function sha256Hex(value = "") {
   return crypto.createHash("sha256").update(String(value || "")).digest("hex");
 }
@@ -103,7 +108,7 @@ function verifyManifestAuth(req, expectedIdentity) {
   const nonceKey = `${identity}:${nonce}`;
   if (usedNonces.has(nonceKey)) return { ok: false, status: 409, error: "Manifest auth nonce replayed" };
 
-  const actualBodySha256 = sha256Hex(JSON.stringify(req.body || {}));
+  const actualBodySha256 = sha256Hex(normalizeAuthBody(req));
   if (actualBodySha256 !== bodySha256) return { ok: false, status: 401, error: "Manifest body hash mismatch" };
 
   const canonical = canonicalAuthString({
@@ -146,7 +151,7 @@ app.get("/health", (req, res) => {
   res.json({ ok: true, authRequired: REQUIRE_AUTH, authConfigured: Boolean(authSecret()) });
 });
 
-app.get("/wallet/:address/manifests", (req, res) => {
+app.get("/wallet/:address/manifests", requireManifestAuth, (req, res) => {
   const db = loadDB();
   const address = normalizeIdentity(req.params.address);
   if (!validIdentity(address)) return res.status(400).json({ ok: false, error: "Invalid identity" });
